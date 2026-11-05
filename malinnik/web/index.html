@@ -1,0 +1,210 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Аггентник</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+
+<main id="login" class="login" hidden>
+  <form id="login-form" class="login-box">
+    <img src="/favicon.svg" alt="" width="40" height="40">
+    <h1>Аггентник</h1>
+    <label for="password">Пароль панели</label>
+    <input id="password" type="password" autocomplete="current-password" required autofocus>
+    <p id="login-error" class="form-error" role="alert"></p>
+    <button class="btn primary" type="submit">Войти</button>
+  </form>
+</main>
+
+<div id="app" hidden>
+  <header class="top">
+    <div class="brand">
+      <img src="/favicon.svg" alt="" width="26" height="26">
+      <span>Аггентник</span>
+    </div>
+    <dl id="vitals" class="vitals" aria-label="Состояние малины"></dl>
+    <button id="logout" class="btn ghost">Выйти</button>
+  </header>
+  <p id="power-warning" class="banner" role="alert" hidden></p>
+
+  <main class="content">
+    <section id="drop" class="drop" tabindex="0" role="button" aria-label="Выбрать архив с сайтом">
+      <strong>Перетащи сюда архив с сайтом</strong>
+      <span>или нажми, чтобы выбрать файл · ZIP, TAR.GZ, 7Z, RAR</span>
+      <input id="file" type="file" accept=".zip,.tar,.gz,.tgz,.bz2,.xz,.7z,.rar" multiple hidden>
+    </section>
+
+    <ul id="uploads" class="uploads"></ul>
+
+    <section class="services" aria-label="Подключения">
+      <article class="service">
+        <div class="service-head">
+          <div>
+            <h2>VPN AmneziaWG</h2>
+            <p id="vpn-status" class="service-status"></p>
+          </div>
+          <label id="vpn-switch-wrap" class="switch" hidden>
+            <input id="vpn-switch" type="checkbox" role="switch" aria-label="VPN включён">
+            <span></span>
+          </label>
+        </div>
+        <p id="vpn-detail" class="service-detail" hidden></p>
+        <p id="vpn-notice" class="service-notice" hidden></p>
+        <div id="vpn-actions" class="service-actions">
+          <button id="vpn-add" class="btn" type="button"></button>
+          <button id="vpn-delete" class="btn ghost" type="button" hidden>Удалить ключ</button>
+        </div>
+        <form id="vpn-form" class="service-form" autocomplete="off" hidden>
+          <label>Ключ или конфиг
+            <textarea id="vpn-key" rows="4" spellcheck="false" placeholder="vpn://… или содержимое файла .conf" required></textarea>
+            <small>Панель работает по HTTP, поэтому вставляй ключ только из домашней сети. Обратно он не показывается. Включённый VPN пускает через себя интернет-трафик всей малины, но панель из домашней сети остаётся доступна.</small>
+          </label>
+          <p id="vpn-form-error" class="form-error" role="alert"></p>
+          <div class="settings-actions">
+            <button class="btn primary" type="submit">Сохранить ключ</button>
+            <button id="vpn-file-button" class="btn" type="button">Выбрать файл .conf</button>
+            <input id="vpn-file" type="file" accept=".conf,.txt,.vpn" hidden>
+          </div>
+        </form>
+      </article>
+
+      <article class="service">
+        <div class="service-head">
+          <div>
+            <h2>Уведомления в Telegram</h2>
+            <p id="tg-status" class="service-status"></p>
+          </div>
+          <label id="tg-switch-wrap" class="switch" hidden>
+            <input id="tg-switch" type="checkbox" role="switch" aria-label="Уведомления включены">
+            <span></span>
+          </label>
+        </div>
+        <p id="tg-help" class="service-detail" hidden>Боту можно писать команды: /status, /sites, /logs, /restart. Полный список: /help.</p>
+        <p id="tg-notice" class="service-notice" hidden></p>
+        <div class="service-actions">
+          <button id="tg-setup" class="btn" type="button" aria-expanded="false">Настроить</button>
+          <button id="tg-test" class="btn ghost" type="button" hidden>Отправить проверку</button>
+        </div>
+        <form id="tg-form" class="service-form" autocomplete="off" hidden>
+          <ol class="howto">
+            <li>Создай бота у <b>@BotFather</b> в Telegram и скопируй токен.</li>
+            <li>Вставь токен ниже и сохрани.</li>
+            <li>Напиши своему боту любое сообщение и нажми «Найти мой чат». Чат должен быть личным: в группах команды не работают.</li>
+          </ol>
+          <label>Токен бота
+            <input id="tg-token" type="password" spellcheck="false" autocomplete="new-password">
+          </label>
+          <p id="tg-form-error" class="form-error" role="alert"></p>
+          <div class="settings-actions">
+            <button class="btn primary" type="submit">Сохранить токен</button>
+            <button id="tg-find" class="btn" type="button">Найти мой чат</button>
+          </div>
+        </form>
+      </article>
+    </section>
+
+    <section aria-labelledby="sites-title">
+      <h2 id="sites-title" class="section-title">Сайты</h2>
+      <p id="empty" class="empty" hidden>Пока ни одного сайта. Загрузи первый архив, остальное панель сделает сама.</p>
+      <ul id="sites" class="sites"></ul>
+    </section>
+  </main>
+</div>
+
+<div id="drag-overlay" class="drag-overlay" hidden>
+  <p>Отпусти, чтобы установить новый сайт</p>
+</div>
+
+<div id="toasts" class="toasts" role="status" aria-live="polite"></div>
+
+<dialog id="confirm" class="dialog">
+  <form method="dialog">
+    <h2 id="confirm-title"></h2>
+    <p id="confirm-text"></p>
+    <div class="dialog-actions">
+      <button class="btn" value="no">Отмена</button>
+      <button class="btn danger" value="yes" id="confirm-yes"></button>
+    </div>
+  </form>
+</dialog>
+
+<template id="site-template">
+  <li class="site">
+    <div class="site-main">
+      <div class="site-title">
+        <span class="status"><i class="dot"></i><span class="status-text"></span></span>
+        <h3 class="site-name"></h3>
+        <p class="site-sub"></p>
+      </div>
+      <dl class="site-stats">
+        <div><dt>Ответ</dt><dd class="stat-http">—</dd></div>
+        <div><dt>CPU</dt><dd class="stat-cpu">—</dd></div>
+        <div><dt>Память</dt><dd class="stat-ram">—</dd></div>
+        <div><dt>Работает</dt><dd class="stat-uptime">—</dd></div>
+      </dl>
+      <div class="site-actions">
+        <a class="btn primary open" target="_blank" rel="noopener"></a>
+        <button class="btn toggle"></button>
+        <button class="btn restart">Перезапустить</button>
+        <button class="btn publish">Опубликовать</button>
+        <button class="btn ghost more" aria-expanded="false">Подробнее</button>
+      </div>
+    </div>
+
+    <div class="public" hidden>
+      <span class="public-label">В интернете</span>
+      <a class="public-url" target="_blank" rel="noopener"></a>
+      <span class="public-status"></span>
+      <span class="public-actions">
+        <button class="btn copy">Копировать</button>
+        <button class="btn ghost unpublish">Снять с публикации</button>
+      </span>
+    </div>
+
+    <ol class="steps" hidden></ol>
+    <p class="notice notice-error" hidden></p>
+    <p class="notice notice-warning" hidden></p>
+
+    <div class="details" hidden>
+      <div class="tabs" role="tablist">
+        <button class="tab" role="tab" data-tab="run">Журнал сайта</button>
+        <button class="tab" role="tab" data-tab="deploy">Журнал установки</button>
+        <button class="tab tab-tunnel" role="tab" data-tab="tunnel" hidden>Журнал публикации</button>
+        <button class="tab" role="tab" data-tab="settings">Настройки</button>
+      </div>
+
+      <pre class="log" tabindex="0"></pre>
+
+      <form class="settings" hidden>
+        <label>Название
+          <input name="name" maxlength="80" required>
+        </label>
+        <label>Команда запуска
+          <input name="start_override" spellcheck="false" autocomplete="off">
+          <small class="hint-cmd"></small>
+        </label>
+        <label>Переменные окружения
+          <textarea name="env" rows="4" spellcheck="false" placeholder="API_KEY=значение"></textarea>
+          <small>Сайт также получает PORT и DATA_DIR. DATA_DIR — папка, которую обновления не трогают.</small>
+        </label>
+        <p class="form-error" role="alert"></p>
+        <div class="settings-actions">
+          <button class="btn primary" type="submit">Сохранить и перезапустить</button>
+          <button class="btn redeploy" type="button">Пересобрать</button>
+          <button class="btn rollback" type="button">Вернуть прошлую версию</button>
+          <button class="btn danger delete" type="button">Удалить сайт</button>
+        </div>
+      </form>
+    </div>
+
+    <div class="drop-hint"><span></span></div>
+  </li>
+</template>
+
+<script src="/app.js"></script>
+</body>
+</html>

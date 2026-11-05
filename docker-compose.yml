@@ -1,0 +1,61 @@
+# Настройки лежат в .env, его создаёт install-docker.sh.
+#
+# Все контейнеры используют сеть малины (network_mode: host): сайты сами занимают порты
+# 8100-8199, а VPN меняет маршруты всей малины.
+
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"  # журналы не должны забить карту памяти
+    max-file: "3"
+
+services:
+  panel:
+    build: .
+    image: aggentnik:local
+    network_mode: host
+    init: true  # сайты запускают дочерние процессы, их кто-то должен завершать
+    restart: unless-stopped
+    stop_grace_period: 30s
+    security_opt:
+      - no-new-privileges:true
+    command: ["python3", "-m", "malinnik", "serve", "--host", "${PANEL_HOST}", "--port", "${PANEL_PORT}"]
+    volumes:
+      - /var/lib/malinnik:/var/lib/malinnik
+      - vpn-socket:/run/malinnik-vpn
+    logging: *logging
+
+  # Единственный контейнер с правами на сеть малины. privileged нужен awg-quick: он пишет
+  # в /proc/sys и настраивает маршруты. Внутри только vpn_helper.py, который проверяет ключи.
+  vpn:
+    profiles: [vpn]
+    build: .
+    image: aggentnik:local
+    network_mode: host
+    init: true
+    privileged: true
+    user: root
+    restart: unless-stopped
+    command: ["python3", "-I", "/opt/malinnik/malinnik/vpn_helper.py"]
+    volumes:
+      - /etc/amnezia/amneziawg:/etc/amnezia/amneziawg
+      - /var/lib/malinnik-vpn:/var/lib/malinnik-vpn
+      - vpn-socket:/run/malinnik-vpn
+    logging: *logging
+
+  # HTTPS: сам получает и продлевает сертификат. Настройки в Caddyfile, его создаёт установщик.
+  caddy:
+    profiles: [domain]
+    image: caddy:2-alpine
+    network_mode: host
+    restart: unless-stopped
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data  # здесь сертификаты, том нельзя терять
+      - caddy-config:/config
+    logging: *logging
+
+volumes:
+  vpn-socket:
+  caddy-data:
+  caddy-config:

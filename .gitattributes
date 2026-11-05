@@ -1,0 +1,3 @@
+# Скрипты запускаются на Linux: с окончаниями строк Windows они не работают.
+* text=auto eol=lf
+*.svg text eol=lf
