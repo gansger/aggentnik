@@ -14,6 +14,7 @@ STATE_DIR=/var/lib/malinnik
 DATA_DIR="$STATE_DIR/data"
 PANEL_UID=7700
 INTERNAL_PORT=7699
+PUBLIC_INTERNAL_PORT=7698
 DEFAULT_PORT=7700
 OLD_NGINX_CONF=/etc/nginx/conf.d/malinnik.conf
 LOG_FILE=/var/log/aggentnik-install.log
@@ -115,7 +116,7 @@ normalize_domain() {
 
 valid_port() {
   [[ "$1" =~ ^[0-9]+$ ]] && [ "$1" -ge 1024 ] && [ "$1" -le 65535 ] \
-    && [ "$1" -ne "$INTERNAL_PORT" ] && { [ "$1" -lt 8100 ] || [ "$1" -gt 8199 ]; }
+    && [ "$1" -ne "$INTERNAL_PORT" ] && [ "$1" -ne "$PUBLIC_INTERNAL_PORT" ] && { [ "$1" -lt 8100 ] || [ "$1" -gt 8199 ]; }
 }
 
 port_owner() {
@@ -139,11 +140,22 @@ caddyfile() {  # caddyfile домен порт почта
 {
 	# Панель и сайты делят сеть сервера, и порт управления был бы открыт для любого сайта.
 	admin off
-	https_port $2
+	# Перенаправление задано ниже явно: у домена два порта, а посетители не должны попасть в админку.
+	auto_https disable_redirects
 $( [ -z "$3" ] || printf '\temail %s\n' "$3" )
 }
 
-$1 {
+http://$1 {
+	redir https://$1{uri} permanent
+}
+
+# Главная страница: только чтение, API панели здесь нет.
+https://$1 {
+	reverse_proxy 127.0.0.1:$PUBLIC_INTERNAL_PORT
+}
+
+# Админка.
+https://$1:$2 {
 	reverse_proxy 127.0.0.1:$INTERNAL_PORT {
 		header_up X-Real-IP {remote_host}
 	}
@@ -202,7 +214,12 @@ start_services() {
   if command -v ufw >/dev/null 2>&1 && ufw status | grep -q "Status: active"; then
     ufw allow "$PUBLIC_PORT/tcp"
     ufw allow 8100:8199/tcp
-    [ -z "$DOMAIN" ] || ufw allow 80/tcp
+    if [ -n "$DOMAIN" ]; then
+      ufw allow 80/tcp
+      ufw allow 443/tcp
+    else
+      ufw allow "$PUBLIC_INTERNAL_PORT/tcp"
+    fi
   fi
 }
 
@@ -211,6 +228,14 @@ panel_answers() {
     curl -fsS -o /dev/null --max-time 5 --resolve "$DOMAIN:$PUBLIC_PORT:127.0.0.1" "https://$DOMAIN:$PUBLIC_PORT/"
   else
     curl -fsS -o /dev/null --max-time 5 "http://127.0.0.1:$PUBLIC_PORT/"
+  fi
+}
+
+portfolio_answers() {
+  if [ -n "$DOMAIN" ]; then
+    curl -fsS -o /dev/null --max-time 5 --resolve "$DOMAIN:443:127.0.0.1" "https://$DOMAIN/"
+  else
+    curl -fsS -o /dev/null --max-time 5 "http://127.0.0.1:$PUBLIC_INTERNAL_PORT/"
   fi
 }
 
@@ -259,7 +284,7 @@ describe_port() {  # describe_port порт состояние
 }
 
 diagnose_certificate() {
-  local address_v4 address_v6 public_ip device acme_error port80 port_panel local_ip
+  local address_v4 address_v6 public_ip device acme_error port80 port443 port_panel local_ip
   address_v4="$(getent ahostsv4 "$DOMAIN" 2>/dev/null | awk 'NR==1 {print $1}' || true)"
   address_v6="$( (getent ahostsv6 "$DOMAIN" 2>/dev/null || true) | awk '{print $1}' | grep -v '^::ffff:' | head -n 1 || true)"
   public_ip="$(curl -4 -fsS --max-time 8 https://api.ipify.org 2>/dev/null || true)"
@@ -281,12 +306,15 @@ diagnose_certificate() {
   local results
   results="$(mktemp -d)"
   port_from_outside "$DOMAIN" 80 >"$results/80" &
+  port_from_outside "$DOMAIN" 443 >"$results/443" &
   port_from_outside "$DOMAIN" "$PUBLIC_PORT" >"$results/panel" &
   wait
   port80="$(cat "$results/80")"
+  port443="$(cat "$results/443")"
   port_panel="$(cat "$results/panel")"
   rm -rf "$results"
   describe_port 80 "$port80"
+  describe_port 443 "$port443"
   describe_port "$PUBLIC_PORT" "$port_panel"
   acme_error="$(docker compose logs --no-log-prefix --tail 200 caddy 2>/dev/null \
     | grep -oE 'urn:ietf:params:acme:error:[A-Za-z]+[^"]*' | tail -n 1 || true)"
@@ -310,7 +338,10 @@ diagnose_certificate() {
   if [ "$port80" != open ]; then
     echo "  - Открой порт 80. Разрешения на самом сервере мало: на роутере нужен проброс порта 80 на ${local_ip:-адрес сервера}."
     echo "  - Если проброс есть, а порт закрыт, адрес ${public_ip:-сервера} может не быть адресом роутера (CGNAT), либо провайдер блокирует порт. Сверь с адресом WAN в настройках роутера и уточни у провайдера."
-    echo "  - Если закрыт только порт 80, сертификат можно получить и через 443: на роутере проброс внешнего порта 443 на ${local_ip:-адрес сервера}:$PUBLIC_PORT."
+    echo "  - Если закрыт только порт 80, сертификат можно получить и через 443."
+  fi
+  if [ "$port443" != open ]; then
+    echo "  - Открой порт 443 для главной страницы: на роутере нужен проброс на ${local_ip:-адрес сервера}."
   fi
   if [ "$port_panel" != open ]; then
     echo "  - Открой порт $PUBLIC_PORT: на роутере нужен проброс на ${local_ip:-адрес сервера}."
@@ -357,9 +388,9 @@ fi
 
 previous_port="$(env_value PUBLIC_PORT)"
 while :; do
-  PUBLIC_PORT="$(ask "Порт панели" "${previous_port:-$DEFAULT_PORT}")"
+  PUBLIC_PORT="$(ask "Порт админки" "${previous_port:-$DEFAULT_PORT}")"
   valid_port "$PUBLIC_PORT" && break
-  echo "Нужен порт от 1024 до 65535, кроме $INTERNAL_PORT и 8100-8199."
+  echo "Нужен порт от 1024 до 65535, кроме $PUBLIC_INTERNAL_PORT, $INTERNAL_PORT и 8100-8199."
 done
 
 OLD_INSTALL=no
@@ -373,13 +404,17 @@ fi
 
 if [ -n "$DOMAIN" ]; then
   url="https://$DOMAIN:$PUBLIC_PORT"
+  portfolio_url="https://$DOMAIN"
 else
   url="http://$(local_address):$PUBLIC_PORT"
+  portfolio_url="http://$(local_address):$PUBLIC_INTERNAL_PORT"
 fi
 echo
-echo "Панель будет доступна по адресу: $url"
+echo "Главная страница: $portfolio_url"
+echo "Админка: $url"
 if [ -n "$DOMAIN" ]; then
-  echo "Для сертификата на роутере нужны пробросы портов 80 и $PUBLIC_PORT на $(local_address)."
+  echo "На роутере нужны пробросы портов 80, 443 и $PUBLIC_PORT на $(local_address),"
+  echo "а чтобы посетители могли открывать сайты, ещё и 8100-8199."
 fi
 confirm "Начать установку?" y || die "установка отменена, ничего не изменено."
 echo
@@ -402,12 +437,14 @@ if [ -n "$DOMAIN" ]; then
     confirm "Всё равно продолжить?" n || die "установка отменена, ничего не изменено."
   fi
 
-  owner="$(port_owner 80)"
-  if [ -n "$owner" ] && ! grep -q caddy <<<"$owner" \
-      && ! { [ -f "$OLD_NGINX_CONF" ] && grep -q nginx <<<"$owner"; }; then
-    die "порт 80 занят другой программой, а он нужен для сертификата:
+  for web_port in 80 443; do
+    owner="$(port_owner "$web_port")"
+    if [ -n "$owner" ] && ! grep -q caddy <<<"$owner" \
+        && ! { [ -f "$OLD_NGINX_CONF" ] && grep -q nginx <<<"$owner"; }; then
+      die "порт $web_port занят другой программой, а он нужен для домена:
 $owner"
-  fi
+    fi
+  done
 fi
 
 if ! command -v docker >/dev/null 2>&1; then
@@ -440,9 +477,12 @@ if [ -n "$DOMAIN" ]; then
   profiles=domain
   panel_host=127.0.0.1
   panel_port="$INTERNAL_PORT"
-  caddyfile "$DOMAIN" "$PUBLIC_PORT" "$EMAIL" > "$APP_DIR/Caddyfile"
+  public_host=127.0.0.1
+  # Рабочий файл заменяется только после проверки: с неверным Caddy перестанет запускаться.
+  caddyfile "$DOMAIN" "$PUBLIC_PORT" "$EMAIL" > "$APP_DIR/Caddyfile.new"
 else
   profiles=""
+  public_host=0.0.0.0
   panel_host=0.0.0.0
   panel_port="$PUBLIC_PORT"
 fi
@@ -451,6 +491,8 @@ COMPOSE_PROJECT_NAME=aggentnik
 COMPOSE_PROFILES=$profiles
 PANEL_HOST=$panel_host
 PANEL_PORT=$panel_port
+PUBLIC_HOST=$public_host
+PUBLIC_INTERNAL_PORT=$PUBLIC_INTERNAL_PORT
 PUBLIC_PORT=$PUBLIC_PORT
 DOMAIN=$DOMAIN
 ACME_EMAIL=$EMAIL
@@ -460,7 +502,12 @@ cd "$APP_DIR"
 
 # Сборка идёт до остановки старой установки: если она упадёт, панель продолжит работать.
 step "Собираю образ панели (первый раз до 10 минут)" docker compose build panel
-[ -z "$DOMAIN" ] || step "Скачиваю Caddy для сертификата" docker compose pull caddy
+if [ -n "$DOMAIN" ]; then
+  step "Скачиваю Caddy для сертификата" docker compose pull caddy
+  step "Проверяю настройки Caddy" docker run --rm -v "$APP_DIR/Caddyfile.new:/etc/caddy/Caddyfile:ro" \
+    caddy:2-alpine caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
+  mv "$APP_DIR/Caddyfile.new" "$APP_DIR/Caddyfile"
+fi
 
 ROLLBACK_HINT=""
 if [ "$OLD_INSTALL" = yes ]; then
@@ -472,12 +519,14 @@ if [ "$OLD_INSTALL" = yes ]; then
 fi
 
 if [ -n "$DOMAIN" ]; then
-  owner="$(port_owner 80)"
-  if [ -n "$owner" ] && ! grep -q caddy <<<"$owner"; then
-    [ -z "$ROLLBACK_HINT" ] || echo "$ROLLBACK_HINT" >&2
-    die "порт 80 всё ещё занят:
+  for web_port in 80 443; do
+    owner="$(port_owner "$web_port")"
+    if [ -n "$owner" ] && ! grep -q caddy <<<"$owner"; then
+      [ -z "$ROLLBACK_HINT" ] || echo "$ROLLBACK_HINT" >&2
+      die "порт $web_port всё ещё занят:
 $owner"
-  fi
+    fi
+  done
 fi
 
 install -d -m 750 "$STATE_DIR" "$DATA_DIR"
@@ -504,7 +553,16 @@ fi
 
 echo
 if [ -n "$ok" ]; then
-  echo "Готово. Панель: $url"
+  echo "Готово."
+  echo "  Главная страница: $portfolio_url"
+  echo "  Админка: $url"
+  if ! portfolio_answers 2>/dev/null; then
+    echo "  Главная страница пока не отвечает. Журнал: cd $APP_DIR && sudo docker compose logs -f panel caddy"
+  fi
+  if [ -n "$DOMAIN" ]; then
+    echo
+    echo "Посетители открывают главную через порт 443, а сайты через порты 8100-8199: их нужно пробросить на роутере."
+  fi
 elif [ -n "$DOMAIN" ]; then
   diagnose_certificate
 else

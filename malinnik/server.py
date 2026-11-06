@@ -31,6 +31,7 @@ COOKIE = "malinnik_session"
 MAX_JSON = 1024 * 1024
 CHUNK = 1024 * 1024
 MAX_DRAIN = 64 * 1024 * 1024
+MAX_COVER = 5 * 1024 * 1024
 SITE_ROUTE = re.compile(r"^/api/sites/([a-z0-9-]+)(?:/([a-z]+))?$")
 SECURITY_HEADERS = {
     "X-Content-Type-Options": "nosniff",
@@ -189,13 +190,19 @@ class Handler(BaseHTTPRequestHandler):
         if path.startswith("/api/telegram"):
             self._telegram(method, path)
             return
+        if path == "/api/portfolio" and method == "POST":
+            self.manager.update_portfolio(self._body())
+            self._json({"ok": True})
+            return
 
         match = SITE_ROUTE.match(path)
         if not match:
             raise ApiError(404, "Не найдено.")
         site_id, action = match.groups()
 
-        if action == "logs" and method == "GET":
+        if action == "cover":
+            self._cover(method, site_id)
+        elif action == "logs" and method == "GET":
             site = self.manager.get(site_id)
             sources = {"run": site.run_log, "deploy": site.deploy_log}
             source = sources.get(query.get("kind", ["run"])[0], site.run_log)
@@ -208,6 +215,28 @@ class Handler(BaseHTTPRequestHandler):
             self._json({"ok": True})
         elif action and method == "POST":
             self.manager.action(site_id, action)
+            self._json({"ok": True})
+        else:
+            raise ApiError(404, "Не найдено.")
+
+    def _cover(self, method: str, site_id: str) -> None:
+        if method == "GET":
+            cover = self.manager.read_cover(site_id)
+            if not cover:
+                raise ApiError(404, "Обложки нет.")
+            self._respond(200, cover[0], cover[1])
+        elif method == "DELETE":
+            self.manager.remove_cover(site_id)
+            self._json({"ok": True})
+        elif method == "POST":
+            try:
+                length = int(self.headers.get("Content-Length", ""))
+            except ValueError:
+                raise ApiError(411, "Браузер не указал размер файла.") from None
+            if length > MAX_COVER:
+                raise ApiError(413, "Обложка должна быть не больше 5 МБ.")
+            self.body_read = True
+            self.manager.set_cover(site_id, self.rfile.read(length))
             self._json({"ok": True})
         else:
             raise ApiError(404, "Не найдено.")

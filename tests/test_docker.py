@@ -114,21 +114,29 @@ class InstallerTests(unittest.TestCase):
     def test_port_validation(self):
         for good in ("7700", "8443", "65535"):
             self.assertEqual(self.run_function(f"valid_port {good}")[0], 0, good)
-        for bad in ("80", "443", "7699", "8100", "8150", "8199", "70000", "abc", "'7700;id'"):
+        for bad in ("80", "443", "7698", "7699", "8100", "8150", "8199", "70000", "abc", "'7700;id'"):
             self.assertNotEqual(self.run_function(f"valid_port {bad}")[0], 0, bad)
 
     def test_caddyfile(self):
         _, text, _ = self.run_function("caddyfile example.ru 7700 me@example.ru")
-        for part in ("admin off", "https_port 7700", "email me@example.ru", "example.ru {",
-                     "reverse_proxy 127.0.0.1:7699", "X-Real-IP {remote_host}"):
+        for part in ("admin off", "email me@example.ru", "auto_https disable_redirects",
+                     "X-Real-IP {remote_host}"):
             self.assertIn(part, text)
-        self.assertEqual(text.count("{"), text.count("}") )
+        self.assertEqual(text.count("{"), text.count("}"))
         self.assertNotIn("disable_tlsalpn_challenge", text, "порт 443 остаётся запасным способом проверки")
+
+    def test_caddyfile_separates_public_page_and_admin(self):
+        _, text, _ = self.run_function("caddyfile example.ru 7700 ''")
+        blocks = dict(re.findall(r"^(https?://\S+) \{\n(.*?)^\}", text, re.S | re.M))
+        self.assertIn("127.0.0.1:7698", blocks["https://example.ru"], "на 443 только портфолио")
+        self.assertNotIn("7699", blocks["https://example.ru"])
+        self.assertIn("127.0.0.1:7699", blocks["https://example.ru:7700"], "админка только на своём порту")
+        self.assertIn("redir https://example.ru{uri}", blocks["http://example.ru"], "http ведёт на главную, а не в админку")
 
     def test_caddyfile_without_email(self):
         _, text, _ = self.run_function("caddyfile example.ru 8443 ''")
         self.assertNotIn("email", text)
-        self.assertIn("https_port 8443", text)
+        self.assertIn("https://example.ru:8443 {", text)
 
     # --- вопросы: именно здесь установка раньше молча пропускала домен ---
 

@@ -18,7 +18,19 @@ services:
     stop_grace_period: 30s
     security_opt:
       - no-new-privileges:true
-    command: ["python3", "-m", "malinnik", "serve", "--host", "${PANEL_HOST}", "--port", "${PANEL_PORT}"]
+    command:
+      - python3
+      - -m
+      - malinnik
+      - serve
+      - --host
+      - ${PANEL_HOST}
+      - --port
+      - ${PANEL_PORT}
+      - --public-host
+      - ${PUBLIC_HOST}
+      - --public-port
+      - ${PUBLIC_INTERNAL_PORT}
     volumes:
       - /var/lib/malinnik:/var/lib/malinnik
     logging: *logging

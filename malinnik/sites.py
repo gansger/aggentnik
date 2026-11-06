@@ -14,6 +14,7 @@ import stat
 import subprocess
 import threading
 import time
+from urllib.parse import urlsplit
 
 from . import archive, detect, metrics
 from .alerts import Alerts
@@ -25,6 +26,7 @@ from .telegram import Telegram
 log = logging.getLogger("malinnik")
 
 PORT_RANGE = range(8100, 8200)
+MAX_DESCRIPTION = 500
 DISK_RESERVE = 200 * 1024 * 1024
 READY_TIMEOUT = 45
 STEP_TIMEOUT = 45 * 60
@@ -79,6 +81,32 @@ def parse_env(text: str) -> dict[str, str]:
     return env
 
 
+def cover_type(data: bytes) -> str | None:
+    """Тип картинки по её содержимому. SVG нельзя: в нём может быть скрипт."""
+    if data.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if data.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "image/webp"
+    return None
+
+
+def _clean_public_url(value: str) -> str:
+    value = value.strip()
+    if not value:
+        return ""
+    # Ссылка попадает на публичную страницу: схема javascript: там недопустима.
+    try:
+        parts = urlsplit(value)
+    except ValueError:
+        parts = None
+    if not parts or parts.scheme not in ("http", "https") or not parts.netloc \
+            or len(value) > 300 or any(c.isspace() for c in value):
+        raise SiteError("Адрес должен начинаться с http:// или https://.")
+    return value
+
+
 def _dir_size(path: str) -> int:
     total = 0
     for root, _, files in os.walk(path):
@@ -117,6 +145,7 @@ class Site:
         self.releases_dir = os.path.join(self.dir, "releases")
         self.data_dir = os.path.join(self.dir, "data")
         self.archive_path = os.path.join(self.dir, "last-archive")
+        self.cover_path = os.path.join(self.dir, "cover")
         logs = os.path.join(self.dir, "logs")
         for folder in (self.releases_dir, self.data_dir, logs):
             os.makedirs(folder, exist_ok=True)
@@ -331,6 +360,10 @@ class Site:
             "error": self.meta.get("last_error"),
             "warning": self.meta.get("last_warning"),
             "can_redeploy": os.path.exists(self.archive_path),
+            "show_in_portfolio": self.meta.get("show_in_portfolio", True),
+            "description": self.meta.get("description", ""),
+            "public_url": self.meta.get("public_url", ""),
+            "cover_version": self.meta.get("cover_version") or 0,
         }
 
     # --- установка ---
@@ -529,6 +562,9 @@ class Manager:
         self.system = self.sampler.system(self.data_dir)
         self.telegram = Telegram(data_dir)
         self.alerts = Alerts(self.notify)
+        self.portfolio_path = os.path.join(data_dir, "portfolio.json")
+        self.portfolio = self._load_portfolio()
+        self.public_port = 0  # порт публичной страницы, его задаёт __main__
         self._load()
 
     def notify(self, text: str) -> None:
@@ -692,7 +728,101 @@ class Manager:
             site.meta["env"] = str(changes["env"])
         if "start_override" in changes:
             site.meta["start_override"] = str(changes["start_override"]).strip()
+        if "show_in_portfolio" in changes:
+            site.meta["show_in_portfolio"] = bool(changes["show_in_portfolio"])
+        if "description" in changes:
+            description = str(changes["description"]).strip()
+            if len(description) > MAX_DESCRIPTION:
+                raise SiteError(f"Описание должно быть не длиннее {MAX_DESCRIPTION} символов.")
+            site.meta["description"] = description
+        if "public_url" in changes:
+            site.meta["public_url"] = _clean_public_url(str(changes["public_url"]))
         site.save()
+
+    # --- портфолио ---
+
+    def _load_portfolio(self) -> dict:
+        settings = {"title": "Портфолио", "subtitle": ""}
+        try:
+            with open(self.portfolio_path, encoding="utf-8") as f:
+                settings.update(json.load(f))
+        except (OSError, ValueError):
+            pass
+        return settings
+
+    def update_portfolio(self, changes: dict) -> None:
+        settings = dict(self.portfolio)
+        if "title" in changes:
+            title = str(changes["title"]).strip()
+            if not title or len(title) > 80:
+                raise SiteError("Заголовок должен быть от 1 до 80 символов.")
+            settings["title"] = title
+        if "subtitle" in changes:
+            subtitle = str(changes["subtitle"]).strip()
+            if len(subtitle) > MAX_DESCRIPTION:
+                raise SiteError(f"Подзаголовок должен быть не длиннее {MAX_DESCRIPTION} символов.")
+            settings["subtitle"] = subtitle
+        tmp = self.portfolio_path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(settings, f, ensure_ascii=False)
+        os.replace(tmp, self.portfolio_path)
+        self.portfolio = settings
+
+    def set_cover(self, site_id: str, data: bytes) -> None:
+        site = self.get(site_id)
+        content_type = cover_type(data)
+        if not content_type:
+            raise SiteError("Обложка должна быть картинкой PNG, JPEG или WebP.")
+        tmp = site.cover_path + ".tmp"
+        with open(tmp, "wb") as f:
+            f.write(data)
+        os.replace(tmp, site.cover_path)
+        site.meta["cover_type"] = content_type
+        site.meta["cover_version"] = int(time.time())
+        site.save()
+
+    def remove_cover(self, site_id: str) -> None:
+        site = self.get(site_id)
+        if os.path.exists(site.cover_path):
+            os.unlink(site.cover_path)
+        site.meta.pop("cover_type", None)
+        site.meta.pop("cover_version", None)
+        site.save()
+
+    def read_cover(self, site_id: str) -> tuple[bytes, str] | None:
+        site = self.get(site_id)
+        content_type = site.meta.get("cover_type")
+        if not content_type or not os.path.exists(site.cover_path):
+            return None
+        with open(site.cover_path, "rb") as f:
+            return f.read(), content_type
+
+    def _is_public(self, site: Site) -> bool:
+        return bool(site.release()) and site.meta.get("show_in_portfolio", True)
+
+    def public_cover(self, site_id: str) -> tuple[bytes, str] | None:
+        site = self.sites.get(site_id)
+        return self.read_cover(site_id) if site and self._is_public(site) else None
+
+    def public_site(self, site: Site, host: str) -> dict:
+        """Всё, что видят посетители. Новые поля сюда попадают только намеренно."""
+        release = site.release() or {}
+        return {
+            "id": site.id,
+            "name": site.meta["name"],
+            "description": site.meta.get("description", ""),
+            "kind": release.get("kind"),
+            "online": site.state() == "running",
+            "url": site.meta.get("public_url") or f"http://{host}:{site.effective_port()}/",
+            "cover": site.meta.get("cover_version") or 0,
+        }
+
+    def public_state(self, host: str) -> dict:
+        sites = sorted(list(self.sites.values()), key=lambda s: s.meta.get("created_at", 0), reverse=True)
+        return {
+            "settings": self.portfolio,
+            "sites": [self.public_site(s, host) for s in sites if self._is_public(s)],
+        }
 
     def action(self, site_id: str, action: str) -> None:
         site = self.get(site_id)
@@ -726,5 +856,6 @@ class Manager:
             "system": self.system,
             "sites": [s.to_json() for s in sites],
             "telegram": self.telegram.to_json(),
+            "portfolio": {**self.portfolio, "public_port": self.public_port},
         }
 

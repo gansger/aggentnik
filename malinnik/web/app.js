@@ -184,9 +184,28 @@ function createRow(site) {
     tab.addEventListener("click", () => setTab(row, tab.dataset.tab));
   });
 
-  $(".settings", el).addEventListener("submit", (event) => {
+  $(".settings:not(.site-portfolio)", el).addEventListener("submit", (event) => {
     event.preventDefault();
     saveSettings(row);
+  });
+  $(".site-portfolio", el).addEventListener("submit", (event) => {
+    event.preventDefault();
+    saveSitePortfolio(row);
+  });
+  $(".cover-upload", el).addEventListener("click", () => $(".cover-file", el).click());
+  $(".cover-file", el).addEventListener("change", (event) => {
+    const [file] = event.target.files;
+    event.target.value = "";
+    if (file) uploadCover(row, file);
+  });
+  $(".cover-remove", el).addEventListener("click", async () => {
+    try {
+      await api(`/api/sites/${row.site.id}/cover`, { method: "DELETE" });
+      await refresh();
+      renderCover(row);
+    } catch (e) {
+      reportError(e);
+    }
   });
   $(".redeploy", el).addEventListener("click", async () => {
     await runAction(row, "redeploy");
@@ -249,11 +268,15 @@ function setTab(row, tab) {
     button.setAttribute("aria-selected", String(button.dataset.tab === tab));
   });
   const isSettings = tab === "settings";
-  $(".settings", row.el).hidden = !isSettings;
-  $(".log", row.el).hidden = isSettings;
+  const isPortfolio = tab === "portfolio";
+  $(".settings:not(.site-portfolio)", row.el).hidden = !isSettings;
+  $(".site-portfolio", row.el).hidden = !isPortfolio;
+  $(".log", row.el).hidden = isSettings || isPortfolio;
   clearTimeout(row.logTimer);
   if (isSettings) {
     fillSettings(row);
+  } else if (isPortfolio) {
+    fillSitePortfolio(row);
   } else {
     $(".log", row.el).textContent = "";
     pollLog(row, true);
@@ -262,7 +285,7 @@ function setTab(row, tab) {
 
 async function pollLog(row, jump = false) {
   clearTimeout(row.logTimer);
-  if (!row.open || row.tab === "settings" || !rows.has(row.site.id)) return;
+  if (!row.open || row.tab === "settings" || row.tab === "portfolio" || !rows.has(row.site.id)) return;
   if (!document.hidden) {
     const log = $(".log", row.el);
     const tab = row.tab;
@@ -282,7 +305,7 @@ async function pollLog(row, jump = false) {
 }
 
 function fillSettings(row) {
-  const form = $(".settings", row.el);
+  const form = $(".settings:not(.site-portfolio)", row.el);
   form.elements.name.value = row.site.name;
   form.elements.start_override.value = row.site.start_override;
   form.elements.env.value = row.site.env;
@@ -299,8 +322,66 @@ function renderSettingsHints(row) {
   $(".redeploy", el).disabled = !site.can_redeploy;
 }
 
+function renderCover(row) {
+  const { site, el } = row;
+  const preview = $(".cover-preview", el);
+  const hasCover = Boolean(site.cover_version);
+  preview.hidden = !hasCover;
+  $(".cover-remove", el).hidden = !hasCover;
+  if (hasCover) preview.src = `/api/sites/${site.id}/cover?v=${site.cover_version}`;
+  else preview.removeAttribute("src");
+}
+
+function fillSitePortfolio(row) {
+  const form = $(".site-portfolio", row.el);
+  form.elements.show.checked = row.site.show_in_portfolio;
+  form.elements.description.value = row.site.description;
+  form.elements.public_url.value = row.site.public_url;
+  $(".form-error", form).textContent = "";
+  renderCover(row);
+}
+
+async function saveSitePortfolio(row) {
+  const form = $(".site-portfolio", row.el);
+  const error = $(".form-error", form);
+  error.textContent = "";
+  try {
+    await api(`/api/sites/${row.site.id}`, {
+      method: "PATCH",
+      body: {
+        show_in_portfolio: form.elements.show.checked,
+        description: form.elements.description.value,
+        public_url: form.elements.public_url.value,
+      },
+    });
+    toast("Сохранено");
+    refresh().catch(reportError);
+  } catch (e) {
+    if (!(e instanceof AuthError)) error.textContent = e.message;
+  }
+}
+
+async function uploadCover(row, file) {
+  const error = $(".site-portfolio .form-error", row.el);
+  error.textContent = "";
+  try {
+    const response = await fetch(`/api/sites/${row.site.id}/cover`, {
+      method: "POST",
+      headers: { "X-Malinnik": "1", "Content-Type": "application/octet-stream" },
+      body: file,
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.error || "Не удалось загрузить обложку");
+    await refresh();
+    renderCover(row);
+    toast("Обложка загружена");
+  } catch (e) {
+    error.textContent = e.message;
+  }
+}
+
 async function saveSettings(row) {
-  const form = $(".settings", row.el);
+  const form = $(".settings:not(.site-portfolio)", row.el);
   const error = $(".form-error", form);
   error.textContent = "";
   try {
@@ -461,6 +542,7 @@ async function refresh() {
   showApp();
   renderVitals(data.system);
   renderTelegram(data.telegram);
+  renderPortfolio(data.portfolio, data.sites);
   renderSites(data.sites);
 }
 
@@ -490,6 +572,52 @@ async function start() {
     }
   }
 }
+
+/* --- главная страница --- */
+
+let portfolioState = null;
+
+function renderPortfolio(portfolio, sites) {
+  portfolioState = portfolio;
+  const shown = sites.filter((site) => site.show_in_portfolio && site.release != null).length;
+  $("#portfolio-status").textContent = `«${portfolio.title}», сайтов на странице: ${shown}`;
+  const link = $("#portfolio-open");
+  // По HTTPS главная открывается на обычном порту домена, а без домена у неё свой порт.
+  const url = location.protocol === "https:"
+    ? `https://${location.hostname}/`
+    : portfolio.public_port ? `http://${location.hostname}:${portfolio.public_port}/` : "";
+  link.hidden = !url;
+  if (url && link.href !== url) link.href = url;
+}
+
+$("#portfolio-setup").addEventListener("click", (event) => {
+  const form = $("#portfolio-settings");
+  form.hidden = !form.hidden;
+  event.target.setAttribute("aria-expanded", String(!form.hidden));
+  if (!form.hidden && portfolioState) {
+    $("#portfolio-title").value = portfolioState.title;
+    $("#portfolio-subtitle").value = portfolioState.subtitle;
+    $("#portfolio-error").textContent = "";
+    $("#portfolio-title").focus();
+  }
+});
+
+$("#portfolio-settings").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  $("#portfolio-error").textContent = "";
+  try {
+    await api("/api/portfolio", {
+      method: "POST",
+      body: { title: $("#portfolio-title").value, subtitle: $("#portfolio-subtitle").value },
+    });
+    $("#portfolio-settings").hidden = true;
+    $("#portfolio-setup").setAttribute("aria-expanded", "false");
+    toast("Сохранено");
+    refresh().catch(reportError);
+  } catch (e) {
+    if (!(e instanceof AuthError)) $("#portfolio-error").textContent = e.message;
+  }
+});
 
 /* --- Telegram --- */
 

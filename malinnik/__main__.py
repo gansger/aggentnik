@@ -10,6 +10,7 @@ import sys
 import threading
 
 from . import auth
+from .portfolio import create_public_server
 from .server import create_server
 
 
@@ -21,6 +22,8 @@ def main() -> None:
     serve = commands.add_parser("serve", help="запустить панель")
     serve.add_argument("--host", default="0.0.0.0")
     serve.add_argument("--port", type=int, default=7700)
+    serve.add_argument("--public-host", default="127.0.0.1", help="адрес публичной страницы портфолио")
+    serve.add_argument("--public-port", type=int, default=0, help="порт портфолио, 0 — не запускать")
 
     password = commands.add_parser("set-password", help="задать пароль панели")
     password.add_argument("--generate", action="store_true", help="создать случайный и показать его")
@@ -49,9 +52,18 @@ def main() -> None:
         print(f"Создан пароль панели: {value}", flush=True)
 
     server, manager = create_server(host, port, data_dir)
+    public = None
+    public_port = getattr(args, "public_port", 0)
+    if public_port:
+        public = create_public_server(getattr(args, "public_host", "127.0.0.1"), public_port, manager)
+        manager.public_port = public_port
+        threading.Thread(target=public.serve_forever, daemon=True).start()
+        logging.info("Портфолио запущено на порту %s", public_port)
 
     def stop(*_):
         threading.Thread(target=server.shutdown, daemon=True).start()
+        if public:
+            threading.Thread(target=public.shutdown, daemon=True).start()
 
     signal.signal(signal.SIGTERM, stop)
     signal.signal(signal.SIGINT, stop)

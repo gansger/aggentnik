@@ -40,7 +40,32 @@
 
     <ul id="uploads" class="uploads"></ul>
 
-    <section class="services" aria-label="Подключения">
+    <section class="services" aria-label="Настройки">
+      <article class="service">
+        <div class="service-head">
+          <div>
+            <h2>Главная страница</h2>
+            <p id="portfolio-status" class="service-status"></p>
+          </div>
+        </div>
+        <div class="service-actions">
+          <button id="portfolio-setup" class="btn" type="button" aria-expanded="false">Настроить</button>
+          <a id="portfolio-open" class="btn ghost" target="_blank" rel="noopener" hidden>Открыть</a>
+        </div>
+        <form id="portfolio-settings" class="service-form" autocomplete="off" hidden>
+          <label>Заголовок
+            <input id="portfolio-title" maxlength="80" required>
+          </label>
+          <label>Подзаголовок
+            <textarea id="portfolio-subtitle" rows="2" maxlength="500" placeholder="Коротко о себе или о работах"></textarea>
+          </label>
+          <p id="portfolio-error" class="form-error" role="alert"></p>
+          <div class="settings-actions">
+            <button class="btn primary" type="submit">Сохранить</button>
+          </div>
+        </form>
+      </article>
+
 <article class="service">
         <div class="service-head">
           <div>
@@ -133,9 +158,38 @@
         <button class="tab" role="tab" data-tab="run">Журнал сайта</button>
         <button class="tab" role="tab" data-tab="deploy">Журнал установки</button>
         <button class="tab" role="tab" data-tab="settings">Настройки</button>
+        <button class="tab" role="tab" data-tab="portfolio">Портфолио</button>
       </div>
 
       <pre class="log" tabindex="0"></pre>
+
+      <form class="settings site-portfolio" hidden>
+        <label class="check">
+          <input name="show" type="checkbox">
+          Показывать на главной странице
+        </label>
+        <label>Описание
+          <textarea name="description" rows="3" maxlength="500" placeholder="Что это за сайт и что в нём сделано"></textarea>
+        </label>
+        <label>Адрес для посетителей
+          <input name="public_url" type="url" spellcheck="false" autocomplete="off" placeholder="https://…">
+          <small>Пусто — ссылка ведёт на порт сайта. Для этого порт должен быть проброшен на роутере.</small>
+        </label>
+        <div class="cover">
+          <span class="cover-title">Обложка</span>
+          <img class="cover-preview" alt="Текущая обложка" hidden>
+          <small>PNG, JPEG или WebP до 5 МБ. Лучше всего подойдёт снимок сайта в пропорции 16:10. Без обложки будет цветная плитка с первой буквой.</small>
+          <div class="settings-actions">
+            <button class="btn cover-upload" type="button">Загрузить обложку</button>
+            <button class="btn ghost cover-remove" type="button" hidden>Убрать обложку</button>
+            <input class="cover-file" type="file" accept="image/png,image/jpeg,image/webp" hidden>
+          </div>
+        </div>
+        <p class="form-error" role="alert"></p>
+        <div class="settings-actions">
+          <button class="btn primary" type="submit">Сохранить</button>
+        </div>
+      </form>
 
       <form class="settings" hidden>
         <label>Название
