@@ -1,4 +1,4 @@
-"""Команды Telegram-бота: состояние, журналы и управление сайтами и VPN.
+"""Команды Telegram-бота: состояние, журналы и управление сайтами.
 
 Бот управляет сервером, поэтому слушается только привязанного личного чата. В группе команды
 не работают: там ими мог бы пользоваться любой участник. Чужие сообщения бот молча игнорирует,
@@ -36,7 +36,7 @@ STATES = {
 KINDS = {"static": "Статика", "node": "Node.js", "python": "Python", "php": "PHP", "custom": "Своя команда"}
 HELP = """Что я умею:
 
-/status — малина, VPN и сайты
+/status — малина и сайты
 /sites — список сайтов с кнопками
 /site имя — подробно о сайте
 /logs имя — журнал сайта
@@ -45,11 +45,10 @@ HELP = """Что я умею:
 /stop имя — остановить
 /publish имя — открыть в интернете
 /unpublish имя — снять с публикации
-/vpn — состояние VPN, /vpn on или /vpn off
 
 Имя можно не указывать: я предложу выбрать сайт. Хватит и начала имени."""
 COMMANDS = [
-    ("status", "Малина, VPN и сайты"),
+    ("status", "Малина и сайты"),
     ("sites", "Список сайтов"),
     ("site", "Подробно о сайте"),
     ("logs", "Журнал сайта"),
@@ -58,16 +57,15 @@ COMMANDS = [
     ("stop", "Остановить сайт"),
     ("publish", "Открыть сайт в интернете"),
     ("unpublish", "Снять сайт с публикации"),
-    ("vpn", "Состояние VPN"),
     ("help", "Справка"),
 ]
 KEYBOARD = {
-    "keyboard": [[{"text": "Статус"}, {"text": "Сайты"}, {"text": "VPN"}]],
+    "keyboard": [[{"text": "Статус"}, {"text": "Сайты"}]],
     "resize_keyboard": True,
 }
-KEYBOARD_WORDS = {"статус": "status", "сайты": "sites", "vpn": "vpn"}
+KEYBOARD_WORDS = {"статус": "status", "сайты": "sites"}
 SITE_ACTIONS = {"restart": "restart", "run": "start", "stop": "stop", "publish": "publish", "unpublish": "unpublish"}
-CONFIRMED = {"stop", "publish", "unpublish", "vpn_up", "vpn_down"}
+CONFIRMED = {"stop", "publish", "unpublish"}
 PICK_TITLES = {
     "restart": "Какой сайт перезапустить?",
     "start": "Какой сайт запустить?",
@@ -121,7 +119,7 @@ class Bot:
         threading.Thread(target=self._worker, daemon=True).start()
 
     def _worker(self) -> None:
-        # Действия идут по одному: поднятие VPN занимает до минуты, а приём сообщений не должен ждать.
+        # Действия идут по одному: остановка сайта занимает секунды, а приём сообщений не должен ждать.
         while True:
             update = self.jobs.get()
             try:
@@ -210,8 +208,6 @@ class Bot:
             self._send(chat_id, self._status_text(), [[button("Обновить", "status"), button("Сайты", "sites")]])
         elif command == "sites":
             self._show_sites(chat_id, None)
-        elif command == "vpn":
-            self._vpn_command(chat_id, arg.lower())
         elif command == "site":
             self._with_site(chat_id, arg, "card", lambda site: self._show_card(chat_id, None, site["id"]))
         elif command == "logs":
@@ -221,14 +217,6 @@ class Bot:
             self._with_site(chat_id, arg, action, lambda site: self._request(chat_id, None, action, site["id"]))
         else:
             self._send(chat_id, "Не знаю такой команды. Список: /help", keyboard=KEYBOARD)
-
-    def _vpn_command(self, chat_id, arg: str) -> None:
-        if arg in ("on", "вкл", "включить"):
-            self._request(chat_id, None, "vpn_up", None)
-        elif arg in ("off", "выкл", "выключить"):
-            self._request(chat_id, None, "vpn_down", None)
-        else:
-            self._show_vpn(chat_id, None)
 
     def _with_site(self, chat_id, arg: str, action: str, run) -> None:
         sites = self.manager.state()["sites"]
@@ -270,8 +258,6 @@ class Bot:
                            [[button("Обновить", "status"), button("Сайты", "sites")]])
             elif kind == "sites":
                 self._show_sites(chat_id, message_id)
-            elif kind == "vpn":
-                self._show_vpn(chat_id, message_id)
             elif kind == "card":
                 self._show_card(chat_id, message_id, rest)
             elif kind == "logs":
@@ -313,9 +299,6 @@ class Bot:
             "stop": f"Остановить «{name}»?",
             "publish": f"Открыть «{name}» в интернете? Сайт увидят все, у кого есть ссылка.",
             "unpublish": f"Снять «{name}» с публикации? Ссылка перестанет работать.",
-            "vpn_up": ("Включить VPN? Через него пойдёт интернет-трафик малины, включая этого бота. "
-                       "Если сервер не ответит, бот замолчит, и выключить VPN можно будет только из панели."),
-            "vpn_down": "Выключить VPN? Трафик малины пойдёт напрямую.",
         }[action]
 
     def _confirmed(self, chat_id, message_id, token: str) -> None:
@@ -326,11 +309,6 @@ class Bot:
         self._perform(chat_id, message_id, entry[0], entry[1])
 
     def _perform(self, chat_id, message_id, action: str, site_id: str | None) -> None:
-        if action in ("vpn_up", "vpn_down"):
-            self._show(chat_id, message_id, "Включаю VPN…" if action == "vpn_up" else "Выключаю VPN…")
-            self.manager.vpn_command("up" if action == "vpn_up" else "down")
-            self._show_vpn(chat_id, message_id)
-            return
         self.manager.action(site_id, action)
         self._show_card(chat_id, message_id, site_id)
 
@@ -354,7 +332,6 @@ class Bot:
             lines.append("⚠️ Не хватает питания")
         if system.get("throttled"):
             lines.append("⚠️ Процессор замедлен")
-        lines.append("VPN: " + self._vpn_line(state["vpn"]))
         lines.append("")
         lines.append(f"Сайты ({len(state['sites'])}):" if state["sites"] else "Сайтов пока нет.")
         for site in state["sites"]:
@@ -362,19 +339,6 @@ class Bot:
             public = " · в интернете" if site["tunnel"]["url"] else ""
             lines.append(f"{icon} {site['name']}: {label}, порт {site['effective_port']}{public}")
         return "\n".join(lines)
-
-    @staticmethod
-    def _vpn_line(vpn: dict) -> str:
-        if not vpn.get("available"):
-            return "сервис не запущен"
-        if not vpn.get("installed"):
-            return "AmneziaWG не установлен"
-        if not vpn.get("configured"):
-            return "ключ не добавлен"
-        if vpn.get("up"):
-            age = vpn.get("handshake_age")
-            return "подключён" if age is not None and age <= 180 else "включён, но сервер не отвечает"
-        return "подключается" if vpn.get("desired") else "выключен"
 
     def _show_sites(self, chat_id, message_id) -> None:
         sites = self.manager.state()["sites"]
@@ -446,19 +410,3 @@ class Bot:
             return
         self._send(chat_id, text[-LOG_CHARS:], pre=True)
 
-    def _show_vpn(self, chat_id, message_id) -> None:
-        vpn = self.manager.vpn_status
-        lines = ["VPN: " + self._vpn_line(vpn)]
-        if vpn.get("endpoint"):
-            lines.append(f"Сервер {vpn['endpoint']}")
-        if vpn.get("up"):
-            if vpn.get("handshake_age") is not None:
-                lines.append(f"Обмен ключами {format_duration(vpn['handshake_age'])} назад")
-            lines.append(f"Принято {format_bytes(vpn.get('rx'))}, отправлено {format_bytes(vpn.get('tx'))}")
-        if vpn.get("problem"):
-            lines.append(f"⚠️ {vpn['problem']}")
-        buttons = []
-        if vpn.get("available") and vpn.get("configured"):
-            toggle = button("Выключить", "ask:vpn_down:") if vpn.get("desired") else button("Включить", "ask:vpn_up:")
-            buttons.append([toggle, button("Обновить", "vpn")])
-        self._show(chat_id, message_id, "\n".join(lines), buttons or None)

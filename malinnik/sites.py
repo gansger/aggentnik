@@ -15,7 +15,7 @@ import subprocess
 import threading
 import time
 
-from . import archive, detect, metrics, tunnel, vpn
+from . import archive, detect, metrics, tunnel
 from .alerts import Alerts
 from .procs import LogFile
 from .procs import kill as _kill
@@ -549,7 +549,6 @@ class Manager:
         self.system = self.sampler.system(self.data_dir)
         self.telegram = Telegram(data_dir)
         self.alerts = Alerts(self.notify)
-        self.vpn_status = dict(vpn.UNAVAILABLE)
         self._load()
 
     def notify(self, text: str) -> None:
@@ -635,9 +634,8 @@ class Manager:
                     if site.health["tcp"]:
                         site.tunnel.retarget(site.effective_port())
                 self.system = self.sampler.system(self.data_dir)
-                self.vpn_status = vpn.status()
                 sites = [s.to_json() for s in list(self.sites.values())]
-                self.alerts.check(sites, self.system, self.vpn_status)
+                self.alerts.check(sites, self.system)
             except Exception:  # noqa: BLE001
                 log.exception("Ошибка сбора показателей")
 
@@ -760,15 +758,6 @@ class Manager:
         return {
             "system": self.system,
             "sites": [s.to_json() for s in sites],
-            "vpn": self.vpn_status,
             "telegram": self.telegram.to_json(),
         }
 
-    def vpn_command(self, command: str, **args) -> dict:
-        """Выполняет команду и сразу обновляет состояние, не дожидаясь следующего замера."""
-        try:
-            result = vpn.call(command, **args)
-        except vpn.VpnError as exc:
-            raise SiteError(str(exc), 409) from None
-        self.vpn_status = {"available": True, **result}
-        return self.vpn_status

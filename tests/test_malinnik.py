@@ -621,35 +621,10 @@ class ApiTests(TempDirCase):
         conn.close()
 
     def test_services_require_login_and_header(self):
-        for method, path in (("POST", "/api/vpn/up"), ("POST", "/api/vpn/import"), ("DELETE", "/api/vpn"),
-                             ("POST", "/api/telegram"), ("POST", "/api/telegram/test")):
+        for method, path in (("POST", "/api/telegram"), ("POST", "/api/telegram/test")):
             with self.subTest(path):
                 res, _ = self.call(method, path, body={})
                 self.assertEqual(res.status, 401)
-
-    def test_vpn_unavailable_is_reported_clearly(self):
-        self.login()
-        with mock.patch.object(sites.vpn, "call", side_effect=sites.vpn.VpnError("Сервис VPN не запущен.")):
-            res, data = self.call("POST", "/api/vpn/up")
-        self.assertEqual(res.status, 409)
-        self.assertIn("не запущен", json.loads(data)["error"])
-        res, data = self.call("GET", "/api/state")
-        self.assertIn("vpn", json.loads(data))
-
-    def test_vpn_key_reaches_helper_and_is_not_kept_by_panel(self):
-        self.login()
-        secret = "vpn://секрет"
-        answer = {"installed": True, "configured": True, "up": False}
-        with mock.patch.object(sites.vpn, "call", return_value=answer) as call:
-            res, _ = self.call("POST", "/api/vpn/import", {"text": secret})
-        self.assertEqual(res.status, 200)
-        call.assert_called_once_with("import", text=secret)
-        _, data = self.call("GET", "/api/state")
-        self.assertNotIn("секрет", data.decode("utf-8"))
-        for root, _, names in os.walk(self.tmp):
-            for name in names:
-                with open(os.path.join(root, name), "rb") as f:
-                    self.assertNotIn("секрет".encode(), f.read(), name)
 
     def test_telegram_token_is_not_returned_by_api(self):
         self.login()

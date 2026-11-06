@@ -519,7 +519,6 @@ async function refresh() {
   const data = await api("/api/state");
   showApp();
   renderVitals(data.system);
-  renderVpn(data.vpn);
   renderTelegram(data.telegram);
   renderSites(data.sites);
 }
@@ -551,131 +550,12 @@ async function start() {
   }
 }
 
-/* --- VPN --- */
-
-let vpnBusy = false;
+/* --- Telegram --- */
 
 function setStatus(el, text, tone = "") {
   el.textContent = text;
   el.className = tone ? `service-status ${tone}` : "service-status";
 }
-
-function renderVpn(vpn) {
-  const status = $("#vpn-status");
-  const detail = $("#vpn-detail");
-  const notice = $("#vpn-notice");
-  const toggle = $("#vpn-switch");
-  const add = $("#vpn-add");
-  const ready = vpn.available && vpn.installed;
-
-  $("#vpn-switch-wrap").hidden = !(ready && vpn.configured);
-  $("#vpn-actions").hidden = !ready;
-  $("#vpn-delete").hidden = !(ready && vpn.configured);
-  add.textContent = vpn.configured ? "Заменить ключ" : "Добавить ключ";
-  if (!vpnBusy) {
-    toggle.checked = Boolean(vpn.desired);
-    toggle.disabled = false;
-  }
-  if (!ready) $("#vpn-form").hidden = true;
-
-  if (!vpn.available) {
-    setStatus(status, "Работает только на малине: сервис ставится вместе с панелью");
-  } else if (!vpn.installed) {
-    setStatus(status, "AmneziaWG не установлен. Запусти install.sh на малине ещё раз", "warn");
-  } else if (!vpn.configured) {
-    setStatus(status, "Ключ не добавлен");
-  } else if (vpnBusy) {
-    setStatus(status, toggle.checked ? "Подключаюсь…" : "Отключаюсь…");
-  } else if (vpn.up && vpn.handshake_age != null && vpn.handshake_age <= 180) {
-    setStatus(status, "Подключён", "ok");
-  } else if (vpn.up) {
-    setStatus(status, "Включён, но сервер пока не отвечает", "warn");
-  } else if (vpn.desired) {
-    setStatus(status, "Подключаюсь…", "warn");
-  } else {
-    setStatus(status, "Выключен");
-  }
-
-  const parts = [];
-  if (vpn.configured && vpn.endpoint) parts.push(`Сервер ${vpn.endpoint}`);
-  if (vpn.up && vpn.handshake_age != null) parts.push(`обмен ключами ${formatDuration(vpn.handshake_age)} назад`);
-  if (vpn.up) parts.push(`принято ${formatBytes(vpn.rx)}, отправлено ${formatBytes(vpn.tx)}`);
-  if (vpn.configured && !vpn.full_tunnel) parts.push("через VPN идёт только часть адресов");
-  detail.hidden = parts.length === 0;
-  detail.textContent = parts.join(" · ");
-
-  const notes = [vpn.problem, ...(vpn.warnings || [])].filter(Boolean);
-  notice.hidden = notes.length === 0;
-  notice.textContent = notes.join(" ");
-  notice.classList.toggle("bad", Boolean(vpn.problem));
-}
-
-$("#vpn-switch").addEventListener("change", async (event) => {
-  const toggle = event.target;
-  const on = toggle.checked;
-  vpnBusy = true;
-  toggle.disabled = true;
-  setStatus($("#vpn-status"), on ? "Подключаюсь…" : "Отключаюсь…");
-  try {
-    await api(`/api/vpn/${on ? "up" : "down"}`, { method: "POST" });
-  } catch (e) {
-    reportError(e);
-  }
-  vpnBusy = false;
-  refresh().catch(reportError);
-});
-
-$("#vpn-add").addEventListener("click", () => {
-  const form = $("#vpn-form");
-  form.hidden = !form.hidden;
-  if (!form.hidden) $("#vpn-key").focus();
-});
-
-$("#vpn-form").addEventListener("submit", async (event) => {
-  event.preventDefault();
-  const error = $("#vpn-form-error");
-  const field = $("#vpn-key");
-  error.textContent = "";
-  try {
-    await api("/api/vpn/import", { method: "POST", body: { text: field.value } });
-    field.value = "";
-    $("#vpn-form").hidden = true;
-    toast("Ключ сохранён");
-    refresh().catch(reportError);
-  } catch (e) {
-    if (!(e instanceof AuthError)) error.textContent = e.message;
-  }
-});
-
-$("#vpn-file-button").addEventListener("click", () => $("#vpn-file").click());
-$("#vpn-file").addEventListener("change", async (event) => {
-  const [file] = event.target.files;
-  event.target.value = "";
-  if (!file) return;
-  if (file.size > 64 * 1024) {
-    $("#vpn-form-error").textContent = "Файл слишком большой для конфига.";
-    return;
-  }
-  $("#vpn-key").value = await file.text();
-});
-
-$("#vpn-delete").addEventListener("click", async () => {
-  const yes = await confirmAction(
-    "Удалить ключ VPN?",
-    "VPN выключится, а ключ удалится с малины. Чтобы подключиться снова, его придётся вставить заново.",
-    "Удалить ключ",
-  );
-  if (!yes) return;
-  try {
-    await api("/api/vpn", { method: "DELETE" });
-    toast("Ключ удалён");
-    refresh().catch(reportError);
-  } catch (e) {
-    reportError(e);
-  }
-});
-
-/* --- Telegram --- */
 
 function renderTelegram(telegram) {
   const status = $("#tg-status");

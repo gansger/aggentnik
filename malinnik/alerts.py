@@ -5,7 +5,6 @@ import time
 from typing import Callable
 
 SITE_DOWN_AFTER = 45  # короткие перезапуски не повод будить человека
-VPN_DOWN_AFTER = 180
 TEMP_HOT, TEMP_OK = 80, 72
 DISK_LOW, DISK_OK = 1024 ** 3, 2 * 1024 ** 3
 SITE_BAD_STATES = {"crashed", "restarting", "unresponsive"}
@@ -30,7 +29,7 @@ class Alerts:
             self.active.add(key)
             self.notify(on_bad)
 
-    def check(self, sites: list[dict], system: dict, vpn: dict) -> None:
+    def check(self, sites: list[dict], system: dict) -> None:
         for site in sites:
             bad = site["desired"] == "running" and site["state"] in SITE_BAD_STATES
             self._track(
@@ -60,11 +59,6 @@ class Alerts:
         if system.get("undervoltage") is not None:
             self._track("power", system["undervoltage"], "Малине не хватает питания.", "Питание малины в норме.")
 
-        age = vpn.get("handshake_age")
-        vpn_bad = bool(vpn.get("up")) and (age is None or age > VPN_DOWN_AFTER)
-        self._track("vpn", vpn_bad, "VPN включён, но сервер не отвечает.", "Связь с сервером VPN восстановилась.",
-                    VPN_DOWN_AFTER if age is None else 0)
-        self._track("vpn-problem", bool(vpn.get("problem")), str(vpn.get("problem")), None)
 
 
 def _site_problem(site: dict) -> str:

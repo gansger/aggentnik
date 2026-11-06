@@ -41,38 +41,7 @@
     <ul id="uploads" class="uploads"></ul>
 
     <section class="services" aria-label="Подключения">
-      <article class="service">
-        <div class="service-head">
-          <div>
-            <h2>VPN AmneziaWG</h2>
-            <p id="vpn-status" class="service-status"></p>
-          </div>
-          <label id="vpn-switch-wrap" class="switch" hidden>
-            <input id="vpn-switch" type="checkbox" role="switch" aria-label="VPN включён">
-            <span></span>
-          </label>
-        </div>
-        <p id="vpn-detail" class="service-detail" hidden></p>
-        <p id="vpn-notice" class="service-notice" hidden></p>
-        <div id="vpn-actions" class="service-actions">
-          <button id="vpn-add" class="btn" type="button"></button>
-          <button id="vpn-delete" class="btn ghost" type="button" hidden>Удалить ключ</button>
-        </div>
-        <form id="vpn-form" class="service-form" autocomplete="off" hidden>
-          <label>Ключ или конфиг
-            <textarea id="vpn-key" rows="4" spellcheck="false" placeholder="vpn://… или содержимое файла .conf" required></textarea>
-            <small>Панель работает по HTTP, поэтому вставляй ключ только из домашней сети. Обратно он не показывается. Включённый VPN пускает через себя интернет-трафик всей малины, но панель из домашней сети остаётся доступна.</small>
-          </label>
-          <p id="vpn-form-error" class="form-error" role="alert"></p>
-          <div class="settings-actions">
-            <button class="btn primary" type="submit">Сохранить ключ</button>
-            <button id="vpn-file-button" class="btn" type="button">Выбрать файл .conf</button>
-            <input id="vpn-file" type="file" accept=".conf,.txt,.vpn" hidden>
-          </div>
-        </form>
-      </article>
-
-      <article class="service">
+<article class="service">
         <div class="service-head">
           <div>
             <h2>Уведомления в Telegram</h2>

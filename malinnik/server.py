@@ -186,9 +186,6 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/upload" and method == "POST":
             self._upload(query)
             return
-        if path.startswith("/api/vpn"):
-            self._vpn(method, path)
-            return
         if path.startswith("/api/telegram"):
             self._telegram(method, path)
             return
@@ -212,19 +209,6 @@ class Handler(BaseHTTPRequestHandler):
         elif action and method == "POST":
             self.manager.action(site_id, action)
             self._json({"ok": True})
-        else:
-            raise ApiError(404, "Не найдено.")
-
-    def _vpn(self, method: str, path: str) -> None:
-        manager = self.manager
-        if path == "/api/vpn/import" and method == "POST":
-            self._json(manager.vpn_command("import", text=str(self._body().get("text", ""))))
-        elif path == "/api/vpn/up" and method == "POST":
-            self._json(manager.vpn_command("up"))
-        elif path == "/api/vpn/down" and method == "POST":
-            self._json(manager.vpn_command("down"))
-        elif path == "/api/vpn" and method == "DELETE":
-            self._json(manager.vpn_command("delete"))
         else:
             raise ApiError(404, "Не найдено.")
 
