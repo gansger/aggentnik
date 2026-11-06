@@ -76,6 +76,102 @@ sudo docker compose exec panel python3 -m malinnik set-password && sudo docker c
 
 Если панель недоступна по домену, запусти установщик ещё раз и оставь домен пустым: панель откроется по адресу `http://локальный-адрес-сервера:7700`.
 
+### Удаление и чистая установка
+
+Все команды выполняются на сервере. **Удаление необратимо:** вместе с панелью исчезнут все загруженные сайты, их данные, пароль и настройки. Docker остаётся на сервере: повторная установка его не требует.
+
+Если что-то из этого нужно сохранить, сначала сделай копию в домашнюю папку:
+
+```bash
+sudo tar -czf ~/aggentnik-backup.tar.gz -C /var/lib malinnik
+```
+
+**1. Останови и удали контейнеры.** Перейди в папку панели:
+
+```bash
+cd /opt/aggentnik
+```
+
+Эта команда удаляет контейнеры, сертификаты и настройки Caddy. Let's Encrypt выдаёт не больше пяти одинаковых сертификатов на домен в неделю, поэтому при частых переустановках убери из неё `--volumes`, чтобы сертификаты сохранились.
+
+```bash
+sudo docker compose --profile domain down --volumes --remove-orphans
+```
+
+Вернись из папки, которую сейчас удалишь, и удали образ панели и том от старой версии с VPN. Если их нет, сообщения об ошибке можно не учитывать.
+
+```bash
+cd ~
+```
+
+```bash
+sudo docker image rm aggentnik:local
+```
+
+```bash
+sudo docker volume rm aggentnik_vpn-socket
+```
+
+**2. Удали файлы панели, сайты и журнал установки.**
+
+```bash
+sudo rm -rf /opt/aggentnik /var/lib/malinnik /var/log/aggentnik-install.log
+```
+
+**3. Убери следы старых версий.** Этот шаг нужен, только если раньше стояла версия без Docker или с VPN. Сообщения о том, что службы или файла нет, можно не учитывать.
+
+Отключи старый VPN панели. Свой VPN с другим именем эти команды не затронут:
+
+```bash
+sudo awg-quick down /etc/amnezia/amneziawg/malinnik0.conf
+```
+
+```bash
+sudo rm -rf /etc/amnezia/amneziawg/malinnik0.conf /var/lib/malinnik-vpn
+```
+
+Удали старые службы и их файлы:
+
+```bash
+sudo systemctl disable --now malinnik malinnik-vpn
+```
+
+```bash
+sudo rm -rf /opt/malinnik /etc/systemd/system/malinnik.service /etc/systemd/system/malinnik.service.d /etc/systemd/system/malinnik-vpn.service /etc/malinnik-https-domain
+```
+
+```bash
+sudo systemctl daemon-reload
+```
+
+```bash
+sudo userdel malinnik
+```
+
+Убери настройку nginx от старой версии:
+
+```bash
+sudo rm -f /etc/nginx/conf.d/malinnik.conf /etc/nginx/conf.d/malinnik.conf.disabled
+```
+
+Выключи nginx и таймер продления certbot, только если они стояли лишь ради панели. Nginx занимает порт 80, который нужен для сертификата. Если на нём работают другие сайты, не выключай его: установщик сообщит, что порт занят.
+
+```bash
+sudo systemctl disable --now nginx certbot.timer
+```
+
+**4. Проверь, что порт 80 свободен.** Команда не должна вывести ни одной строки с портом:
+
+```bash
+sudo ss -ltnp 'sport = :80'
+```
+
+**5. Поставь заново.** Установщик снова спросит домен, почту и порт и выдаст новый пароль:
+
+```bash
+sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/gansger/aggentnik/main/install-docker.sh)"
+```
+
 ## Как пользоваться
 
 - **Новый сайт:** перетащи архив на страницу. Название берётся из имени файла.
