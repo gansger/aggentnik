@@ -4,15 +4,11 @@ FROM debian:trixie-slim
 # установке: под ARM готовых сборок часто нет.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
-        ca-certificates curl \
+        ca-certificates \
         python3 python3-venv python3-dev build-essential \
         nodejs npm php-cli 7zip \
-    && curl -fsSL https://pkg.cloudflare.com/cloudflare-main.gpg -o /usr/share/keyrings/cloudflare-main.gpg \
-    && echo 'deb [signed-by=/usr/share/keyrings/cloudflare-main.gpg] https://pkg.cloudflare.com/cloudflared any main' \
-        > /etc/apt/sources.list.d/cloudflared.list \
     && sed -i 's/^Components: main$/Components: main non-free/' /etc/apt/sources.list.d/debian.sources \
     && apt-get update \
-    && apt-get install -y --no-install-recommends cloudflared \
     && { apt-get install -y --no-install-recommends 7zip-rar || echo "RAR недоступен, остальные форматы работают"; } \
     && rm -rf /var/lib/apt/lists/*
 

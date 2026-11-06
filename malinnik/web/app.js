@@ -179,23 +179,6 @@ function createRow(site) {
     runAction(row, action);
   });
   $(".restart", el).addEventListener("click", () => runAction(row, "restart"));
-  $(".publish", el).addEventListener("click", async () => {
-    const yes = await confirmAction(
-      "Опубликовать сайт в интернете?",
-      `«${row.site.name}» станет доступен всем, у кого есть ссылка. Сама панель останется закрытой. Адрес выдаёт Cloudflare: он случайный и меняется при перезапуске панели или малины.`,
-      "Опубликовать",
-    );
-    if (yes) runAction(row, "publish");
-  });
-  $(".unpublish", el).addEventListener("click", async () => {
-    const yes = await confirmAction(
-      "Снять сайт с публикации?",
-      "Ссылка перестанет работать. При новой публикации адрес будет другим.",
-      "Снять",
-    );
-    if (yes) runAction(row, "unpublish");
-  });
-  $(".copy", el).addEventListener("click", () => copyText(row.site.tunnel.url));
   $(".more", el).addEventListener("click", () => setOpen(row, !row.open));
   el.querySelectorAll(".tab").forEach((tab) => {
     tab.addEventListener("click", () => setTab(row, tab.dataset.tab));
@@ -375,47 +358,6 @@ function renderSteps(row) {
   }));
 }
 
-function renderPublic(row) {
-  const { site, el } = row;
-  $(".publish", el).hidden = site.published || site.release == null;
-  $(".public", el).hidden = !site.published;
-  $(".tab-tunnel", el).hidden = !site.published;
-  if (!site.published && row.tab === "tunnel") setTab(row, "run");
-  if (!site.published) return;
-
-  const { state, url } = site.tunnel;
-  const link = $(".public-url", el);
-  link.hidden = !url;
-  if (url && link.href !== `${url}/`) {
-    link.href = url;
-    link.textContent = url;
-  }
-  $(".copy", el).hidden = !url;
-  const notes = {
-    starting: "Получаю адрес у Cloudflare…",
-    retrying: "Нет связи с Cloudflare, пробую снова…",
-    off: "Туннель не запущен: на малине нет cloudflared.",
-  };
-  let note = notes[state] || "";
-  if (state === "online" && site.uptime == null) note = "Сайт остановлен, по ссылке будет ошибка.";
-  $(".public-status", el).textContent = note;
-}
-
-async function copyText(text) {
-  // navigator.clipboard работает только по HTTPS, а панель открыта по HTTP.
-  try {
-    await navigator.clipboard.writeText(text);
-  } catch {
-    const field = document.createElement("textarea");
-    field.value = text;
-    document.body.append(field);
-    field.select();
-    document.execCommand("copy");
-    field.remove();
-  }
-  toast("Адрес скопирован");
-}
-
 function subtitle(site) {
   const parts = [];
   if (site.kind) parts.push(KINDS[site.kind] || site.kind);
@@ -471,7 +413,6 @@ function renderRow(row, site) {
   restart.hidden = site.release == null || !stopping;
   restart.disabled = site.deploy.active;
 
-  renderPublic(row);
   renderSteps(row);
 
   const error = $(".notice-error", el);

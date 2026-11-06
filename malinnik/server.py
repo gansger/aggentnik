@@ -197,7 +197,7 @@ class Handler(BaseHTTPRequestHandler):
 
         if action == "logs" and method == "GET":
             site = self.manager.get(site_id)
-            sources = {"run": site.run_log, "deploy": site.deploy_log, "tunnel": site.tunnel.log}
+            sources = {"run": site.run_log, "deploy": site.deploy_log}
             source = sources.get(query.get("kind", ["run"])[0], site.run_log)
             self._json({"text": source.tail()})
         elif action is None and method == "PATCH":

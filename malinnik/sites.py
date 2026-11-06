@@ -15,7 +15,7 @@ import subprocess
 import threading
 import time
 
-from . import archive, detect, metrics, tunnel
+from . import archive, detect, metrics
 from .alerts import Alerts
 from .procs import LogFile
 from .procs import kill as _kill
@@ -122,7 +122,6 @@ class Site:
             os.makedirs(folder, exist_ok=True)
         self.run_log = LogFile(os.path.join(logs, "run.log"))
         self.deploy_log = LogFile(os.path.join(logs, "deploy.log"))
-        self.tunnel = tunnel.Tunnel(os.path.join(logs, "tunnel.log"), self._tunnel_url)
 
         self.lock = threading.RLock()
         self.proc: subprocess.Popen | None = None
@@ -259,23 +258,6 @@ class Site:
             else:
                 self.restart_at = now + min(60, 2 ** self.crashes)
 
-    def publish(self) -> None:
-        if not self.release():
-            raise SiteError("Сначала сайт должен установиться.", 409)
-        if not tunnel.available():
-            raise SiteError(tunnel.INSTALL_HINT, 409)
-        self.meta["published"] = True
-        self.save()
-        self.tunnel.start(self.effective_port())
-
-    def unpublish(self) -> None:
-        self.meta["published"] = False
-        self.save()
-        self.tunnel.stop()
-
-    def _tunnel_url(self, url: str) -> None:
-        self.manager.notify(f"«{self.meta['name']}» доступен в интернете: {url}")
-
     def effective_port(self) -> int:
         """Порт сайта на деле: код может игнорировать PORT и слушать, например, 3000."""
         listen = self.stats.get("listen") or []
@@ -346,8 +328,6 @@ class Site:
             "cpu": self.stats.get("cpu"),
             "rss": self.stats.get("rss"),
             "deploy": self.deploy,
-            "published": bool(self.meta.get("published")),
-            "tunnel": self.tunnel.to_json(),
             "error": self.meta.get("last_error"),
             "warning": self.meta.get("last_warning"),
             "can_redeploy": os.path.exists(self.archive_path),
@@ -574,8 +554,6 @@ class Manager:
                     site.start()
                 except Exception:  # noqa: BLE001
                     log.exception("Не удалось запустить сайт %s", site.id)
-            if site.meta.get("published") and tunnel.available():
-                site.tunnel.start(site.effective_port())
         self.telegram.run()
         count = sum(1 for s in self.sites.values() if s.proc)
         self.notify(f"Аггентник запущен, сайтов работает: {count}.")
@@ -587,7 +565,6 @@ class Manager:
         self.telegram.shutdown()
         sites = list(self.sites.values())
         threads = [threading.Thread(target=s._stop_proc) for s in sites]
-        threads += [threading.Thread(target=s.tunnel.stop) for s in sites]
         for thread in threads:
             thread.start()
         for thread in threads:
@@ -607,7 +584,6 @@ class Manager:
             for site in list(self.sites.values()):
                 try:
                     site.watch()
-                    site.tunnel.watch()
                 except Exception:  # noqa: BLE001
                     log.exception("Ошибка присмотра за сайтом %s", site.id)
 
@@ -631,8 +607,6 @@ class Manager:
                     if proc and proc.pid in sampled:
                         site.stats = sampled[proc.pid]
                     site.check_health()
-                    if site.health["tcp"]:
-                        site.tunnel.retarget(site.effective_port())
                 self.system = self.sampler.system(self.data_dir)
                 sites = [s.to_json() for s in list(self.sites.values())]
                 self.alerts.check(sites, self.system)
@@ -722,12 +696,6 @@ class Manager:
 
     def action(self, site_id: str, action: str) -> None:
         site = self.get(site_id)
-        if action == "publish":
-            site.publish()
-            return
-        if action == "unpublish":
-            site.unpublish()
-            return
         if site.deploy["active"]:
             raise SiteError("Сайт сейчас устанавливается. Дождись окончания.", 409)
         if action == "start":
@@ -748,7 +716,6 @@ class Manager:
         if site.deploy["active"]:
             raise SiteError("Сайт сейчас устанавливается. Дождись окончания.", 409)
         site.meta["desired"] = "stopped"
-        site.tunnel.stop()
         site._stop_proc()
         del self.sites[site_id]
         _rmtree(site.dir)

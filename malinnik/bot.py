@@ -43,8 +43,6 @@ HELP = """Что я умею:
 /restart имя — перезапустить
 /run имя — запустить
 /stop имя — остановить
-/publish имя — открыть в интернете
-/unpublish имя — снять с публикации
 
 Имя можно не указывать: я предложу выбрать сайт. Хватит и начала имени."""
 COMMANDS = [
@@ -55,8 +53,6 @@ COMMANDS = [
     ("restart", "Перезапустить сайт"),
     ("run", "Запустить сайт"),
     ("stop", "Остановить сайт"),
-    ("publish", "Открыть сайт в интернете"),
-    ("unpublish", "Снять сайт с публикации"),
     ("help", "Справка"),
 ]
 KEYBOARD = {
@@ -64,14 +60,12 @@ KEYBOARD = {
     "resize_keyboard": True,
 }
 KEYBOARD_WORDS = {"статус": "status", "сайты": "sites"}
-SITE_ACTIONS = {"restart": "restart", "run": "start", "stop": "stop", "publish": "publish", "unpublish": "unpublish"}
-CONFIRMED = {"stop", "publish", "unpublish"}
+SITE_ACTIONS = {"restart": "restart", "run": "start", "stop": "stop"}
+CONFIRMED = {"stop"}
 PICK_TITLES = {
     "restart": "Какой сайт перезапустить?",
     "start": "Какой сайт запустить?",
     "stop": "Какой сайт остановить?",
-    "publish": "Какой сайт открыть в интернете?",
-    "unpublish": "Какой сайт снять с публикации?",
     "logs": "Журнал какого сайта показать?",
     "card": "О каком сайте рассказать?",
 }
@@ -297,8 +291,6 @@ class Bot:
         name = self.manager.get(site_id).meta["name"] if site_id else ""
         return {
             "stop": f"Остановить «{name}»?",
-            "publish": f"Открыть «{name}» в интернете? Сайт увидят все, у кого есть ссылка.",
-            "unpublish": f"Снять «{name}» с публикации? Ссылка перестанет работать.",
         }[action]
 
     def _confirmed(self, chat_id, message_id, token: str) -> None:
@@ -336,8 +328,7 @@ class Bot:
         lines.append(f"Сайты ({len(state['sites'])}):" if state["sites"] else "Сайтов пока нет.")
         for site in state["sites"]:
             icon, label = STATES.get(site["state"], ("⚪", site["state"]))
-            public = " · в интернете" if site["tunnel"]["url"] else ""
-            lines.append(f"{icon} {site['name']}: {label}, порт {site['effective_port']}{public}")
+            lines.append(f"{icon} {site['name']}: {label}, порт {site['effective_port']}")
         return "\n".join(lines)
 
     def _show_sites(self, chat_id, message_id) -> None:
@@ -372,11 +363,6 @@ class Bot:
             lines.append(f"CPU {site['cpu']}%, память {format_bytes(site['rss'])}")
         if site["restarts"]:
             lines.append(f"Перезапусков: {site['restarts']}")
-        tunnel = site["tunnel"]
-        if tunnel["url"]:
-            lines.append(f"В интернете: {tunnel['url']}")
-        elif tunnel["state"] != "off":
-            lines.append("Публикация: получаю адрес…")
         if site["error"]:
             lines.append(f"⚠️ {site['error']}")
         self._show(chat_id, message_id, "\n".join(lines), self._card_buttons(site))
@@ -391,13 +377,6 @@ class Bot:
             else:
                 rows.append([button("Запустить", f"do:start:{site_id}")])
         rows.append([button("Журнал сайта", f"logs:run:{site_id}"), button("Журнал установки", f"logs:deploy:{site_id}")])
-        if site["published"]:
-            row = [button("Снять с публикации", f"ask:unpublish:{site_id}")]
-            if site["tunnel"]["url"]:
-                row.insert(0, {"text": "Открыть", "url": site["tunnel"]["url"]})
-            rows.append(row)
-        elif site["release"] is not None:
-            rows.append([button("Открыть в интернете", f"ask:publish:{site_id}")])
         rows.append([button("Обновить", f"card:{site_id}"), button("Все сайты", "sites")])
         return rows
 

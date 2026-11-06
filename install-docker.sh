@@ -7,6 +7,7 @@
 set -euo pipefail
 
 INSTALL_COMMAND='sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/gansger/aggentnik/main/install-docker.sh)"'
+KEEP_INBOUND_COMMAND='sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/gansger/aggentnik/main/keep-inbound.sh)"'
 REPO_TARBALL=https://github.com/gansger/aggentnik/archive/refs/heads/main.tar.gz
 APP_DIR=/opt/aggentnik
 STATE_DIR=/var/lib/malinnik
@@ -302,7 +303,9 @@ diagnose_certificate() {
     echo "  - У домена есть AAAA-запись $address_v6. Let's Encrypt сначала идёт по IPv6. Если этот адрес не ведёт на сервер, удали запись."
   fi
   if is_vpn_device "$device"; then
-    echo "  - Трафик сервера идёт через VPN ($device). Ответы на входящие соединения уходят в туннель, и Let's Encrypt их не получает. Выключи VPN на время проверки или настрой его так, чтобы он не забирал весь трафик."
+    echo "  - Начни с этого: трафик сервера идёт через VPN ($device), поэтому внешний адрес выше — это адрес VPN. Ответы на входящие соединения уходят в туннель, и порты выглядят закрытыми, даже если проброс настроен верно."
+    echo "    Чтобы оставить VPN и принимать соединения: $KEEP_INBOUND_COMMAND"
+    echo "    Затем: cd $APP_DIR && sudo docker compose restart caddy"
   fi
   if [ "$port80" != open ]; then
     echo "  - Открой порт 80. Разрешения на самом сервере мало: на роутере нужен проброс порта 80 на ${local_ip:-адрес сервера}."
@@ -390,8 +393,9 @@ if [ -n "$DOMAIN" ]; then
   if [ -z "$resolved" ]; then
     echo "Домен $DOMAIN пока никуда не указывает. Создай A-запись на ${public_ip:-внешний адрес сервера}."
     confirm "Всё равно продолжить?" n || die "установка отменена, ничего не изменено."
-  elif is_vpn_device "$device"; then
-    echo "Трафик сервера идёт через VPN ($device): Let's Encrypt, скорее всего, не сможет получить ответ от сервера."
+  elif is_vpn_device "$device" && ! ip rule show 2>/dev/null | grep -qF 'fwmark 0x7700'; then
+    echo "Трафик сервера идёт через VPN ($device): Let's Encrypt не сможет получить ответ от сервера."
+    echo "Чтобы оставить VPN и принимать соединения, сначала выполни: $KEEP_INBOUND_COMMAND"
     confirm "Всё равно продолжить?" n || die "установка отменена, ничего не изменено."
   elif [ -n "$public_ip" ] && [ "$resolved" != "$public_ip" ]; then
     echo "Домен указывает на $resolved, а внешний адрес сервера $public_ip."

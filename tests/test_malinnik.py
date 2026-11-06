@@ -17,7 +17,7 @@ from urllib.parse import quote
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from malinnik import archive, auth, detect, metrics, sites, telegram, tunnel  # noqa: E402
+from malinnik import archive, auth, detect, metrics, sites, telegram  # noqa: E402
 from malinnik.server import Handler, create_server  # noqa: E402
 
 LIMIT = 10 ** 9
@@ -538,39 +538,11 @@ class ApiTests(TempDirCase):
         res, data = self.call("PATCH", f"/api/sites/{site_id}", {"env": "no equals"})
         self.assertEqual(res.status, 400)
 
-    def test_publish_flow(self):
+    def test_static_site_hides_databases(self):
         self.login()
         site_id = self.upload("pub.zip", {"index.html": "x", "shop.db": "база"})
         site = self.wait_site(site_id)
         self.assertEqual(self.fetch(site["port"], "/shop.db")[0], 404)
-
-        with mock.patch.object(tunnel, "available", lambda: False):
-            res, data = self.call("POST", f"/api/sites/{site_id}/publish")
-        self.assertEqual(res.status, 409)
-        self.assertIn("cloudflared", json.loads(data)["error"])
-        self.assertFalse(self.site(site_id)["published"])
-
-        script = os.path.join(self.tmp, "fake_cloudflared.py")
-        with open(script, "w", encoding="utf-8") as f:
-            f.write("import time\nprint('https://demo-site.trycloudflare.com', flush=True)\ntime.sleep(60)\n")
-        with mock.patch.object(tunnel, "available", lambda: True), \
-                mock.patch.object(tunnel, "command", lambda port: f'"{sys.executable}" "{script}"'):
-            res, _ = self.call("POST", f"/api/sites/{site_id}/publish")
-            self.assertEqual(res.status, 200)
-            deadline = time.time() + 10
-            while time.time() < deadline and not self.site(site_id)["tunnel"]["url"]:
-                time.sleep(0.1)
-        current = self.site(site_id)
-        self.assertTrue(current["published"])
-        self.assertEqual(current["tunnel"], {"state": "online", "url": "https://demo-site.trycloudflare.com"})
-        res, data = self.call("GET", f"/api/sites/{site_id}/logs?kind=tunnel")
-        self.assertIn("demo-site", json.loads(data)["text"])
-
-        res, _ = self.call("POST", f"/api/sites/{site_id}/unpublish")
-        self.assertEqual(res.status, 200)
-        current = self.site(site_id)
-        self.assertFalse(current["published"])
-        self.assertEqual(current["tunnel"]["state"], "off")
 
     def test_cookie_is_secure_only_behind_https(self):
         res, _ = self.call("POST", "/api/login", {"password": "secret"})

@@ -217,22 +217,6 @@ body.no-sites .drop { padding: 72px 16px; }
 .switch input:disabled + span { opacity: .5; }
 @media (prefers-reduced-motion: reduce) { .switch span, .switch span::after { transition: none; } }
 
-/* Публичный адрес сайта */
-.public {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 6px 12px;
-  padding: 8px 16px;
-  border-top: 1px solid var(--border);
-  background: var(--accent-soft);
-  font-size: 14px;
-}
-.public-label { font-weight: 600; }
-.public-url { color: var(--accent); font-family: var(--mono); font-size: 13px; overflow-wrap: anywhere; min-width: 0; }
-.public-status { color: var(--muted); font-size: 13px; }
-.public-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-left: auto; }
-
 .section-title { margin: 28px 0 10px; font-size: 13px; font-weight: 600; color: var(--muted); }
 .empty { color: var(--muted); }
 
@@ -387,7 +371,6 @@ body.dragging .site { outline: 1px dashed transparent; }
 }
 @media (max-width: 640px) {
   .top { padding: 10px 16px; }
-  .public-actions { margin-left: 0; }
   .banner { padding: 8px 16px; }
   .vitals { order: 3; flex-basis: 100%; }
   #logout { margin-left: auto; }

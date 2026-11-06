@@ -13,7 +13,7 @@ from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from malinnik import alerts, bot, sites, telegram, tunnel  # noqa: E402
+from malinnik import alerts, bot, sites, telegram  # noqa: E402
 
 
 class AlertsTests(unittest.TestCase):
@@ -285,8 +285,7 @@ def site_json(site_id="shop", name="Магазин", **extra):
     data = {
         "id": site_id, "name": name, "state": "running", "desired": "running", "kind": "node", "release": 2,
         "port": 8100, "effective_port": 8100, "uptime": 3700, "restarts": 0, "error": None, "cpu": 1.5, "rss": 5000000,
-        "health": {"tcp": True, "code": 200, "ms": 12}, "published": False,
-        "tunnel": {"state": "off", "url": None}, "deploy": {"active": False},
+        "health": {"tcp": True, "code": 200, "ms": 12}, "deploy": {"active": False},
     }
     data.update(extra)
     return data
@@ -437,7 +436,7 @@ class BotTests(unittest.TestCase):
     # --- подтверждения ---
 
     def test_dangerous_actions_ask_first(self):
-        for command, action in (("/stop shop", "stop"), ("/publish shop", "publish"), ("/unpublish shop", "unpublish")):
+        for command, action in (("/stop shop", "stop"),):
             with self.subTest(command):
                 self.calls.clear()
                 self.manager.action.reset_mock()
@@ -468,7 +467,7 @@ class BotTests(unittest.TestCase):
         self.manager.action.assert_not_called()
 
     def test_forged_button_cannot_skip_confirmation(self):
-        for data in ("do:stop:shop", "do:publish:shop", "do:unpublish:shop", "yes:выдуманный"):
+        for data in ("do:stop:shop", "yes:выдуманный"):
             self.bot.handle(self.press(data))
         self.manager.action.assert_not_called()
 
@@ -485,15 +484,8 @@ class BotTests(unittest.TestCase):
         for part in ("Магазин", "Работает", "Node.js", "версия 2", "Ответ 200"):
             self.assertIn(part, text)
         labels = [b["text"] for b in self.last_buttons()]
-        for label in ("Перезапустить", "Остановить", "Журнал сайта", "Открыть в интернете"):
+        for label in ("Перезапустить", "Остановить", "Журнал сайта"):
             self.assertIn(label, labels)
-
-    def test_card_of_published_site_has_link(self):
-        self.sites[0] = site_json(published=True, tunnel={"state": "online", "url": "https://x.trycloudflare.com"})
-        self.bot.handle(self.message("/site shop"))
-        self.assertIn("https://x.trycloudflare.com", self.texts()[0])
-        link = next(b for b in self.last_buttons() if b["text"] == "Открыть")
-        self.assertEqual(link["url"], "https://x.trycloudflare.com")
 
     def test_stopped_site_offers_start(self):
         self.sites[0] = site_json(state="stopped", desired="stopped", uptime=None)
@@ -594,84 +586,6 @@ class BotEndToEndTests(unittest.TestCase):
         self.assertTrue(self.wait_for(lambda: self.manager.telegram.last_chat is not None))
         time.sleep(0.3)
         self.assertFalse([m for m in FakeTelegram.received if m.get("chat_id") == 666])
-
-
-FAKE_CLOUDFLARED = """
-import sys, time
-print("2026 INF Requesting new quick Tunnel on trycloudflare.com...", flush=True)
-print('2026 ERR failed: Post "https://api.trycloudflare.com/tunnel": timeout', flush=True)
-mode = sys.argv[1]
-if mode == "fail":
-    sys.exit(1)
-print("2026 INF |  https://calm-river-demo.trycloudflare.com  |", flush=True)
-time.sleep(60)
-"""
-
-
-class TunnelTests(unittest.TestCase):
-    def setUp(self):
-        self.tmp = tempfile.mkdtemp(prefix="malinnik-tunnel-")
-        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
-        self.script = os.path.join(self.tmp, "fake.py")
-        with open(self.script, "w", encoding="utf-8") as f:
-            f.write(FAKE_CLOUDFLARED)
-        self.urls = []
-        self.tunnel = tunnel.Tunnel(os.path.join(self.tmp, "tunnel.log"), self.urls.append)
-        self.addCleanup(self.tunnel.stop)
-
-    def use(self, mode):
-        command = f'"{sys.executable}" "{self.script}" {mode}'
-        patch = mock.patch.object(tunnel, "command", lambda port: command)
-        patch.start()
-        self.addCleanup(patch.stop)
-
-    def wait_for(self, predicate, timeout=10):
-        deadline = time.time() + timeout
-        while time.time() < deadline:
-            if predicate():
-                return True
-            time.sleep(0.05)
-        return False
-
-    def test_finds_site_url_and_not_api_url(self):
-        self.use("ok")
-        self.tunnel.start(8100)
-        self.assertTrue(self.wait_for(lambda: self.tunnel.url))
-        self.assertEqual(self.tunnel.url, "https://calm-river-demo.trycloudflare.com")
-        self.assertEqual(self.urls, [self.tunnel.url])
-        self.assertEqual(self.tunnel.to_json()["state"], "online")
-
-    def test_stop_clears_url(self):
-        self.use("ok")
-        self.tunnel.start(8100)
-        self.wait_for(lambda: self.tunnel.url)
-        self.tunnel.stop()
-        self.assertEqual(self.tunnel.to_json(), {"state": "off", "url": None})
-
-    def test_failure_retries_with_pause(self):
-        self.use("fail")
-        self.tunnel.start(8100)
-        proc = self.tunnel.proc
-        self.assertTrue(self.wait_for(lambda: proc.poll() is not None))
-        self.tunnel.watch()
-        self.assertEqual(self.tunnel.to_json()["state"], "retrying")
-        self.assertIsNotNone(self.tunnel.restart_at)
-        self.tunnel.restart_at = time.time() - 1
-        self.tunnel.watch()
-        self.assertIsNotNone(self.tunnel.proc)
-
-    def test_retarget_only_on_change(self):
-        self.use("ok")
-        self.tunnel.start(8100)
-        first = self.tunnel.proc
-        self.tunnel.retarget(8100)
-        self.assertIs(self.tunnel.proc, first)
-        self.tunnel.retarget(3000)
-        self.assertIsNot(self.tunnel.proc, first)
-        self.assertEqual(self.tunnel.port, 3000)
-
-    def test_real_command_targets_localhost_only(self):
-        self.assertEqual(tunnel.command(8100), "cloudflared tunnel --no-autoupdate --url http://localhost:8100")
 
 
 if __name__ == "__main__":

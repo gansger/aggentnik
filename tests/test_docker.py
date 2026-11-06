@@ -16,7 +16,7 @@ def read(name):
 
 class DockerFilesTests(unittest.TestCase):
     def test_files_have_unix_line_endings(self):
-        for name in ("install-docker.sh", "Dockerfile", "docker-compose.yml"):
+        for name in ("install-docker.sh", "keep-inbound.sh", "Dockerfile", "docker-compose.yml"):
             self.assertNotIn("\r", read(name), name)
 
     def test_image_never_receives_local_secrets(self):
@@ -39,6 +39,21 @@ class DockerFilesTests(unittest.TestCase):
         for name in ("Dockerfile", "docker-compose.yml", "malinnik/server.py", "malinnik/sites.py",
                      "malinnik/bot.py", "malinnik/alerts.py", "malinnik/web/app.js", "malinnik/web/index.html"):
             self.assertNotRegex(read(name).lower(), r"vpn|amnezia", name)
+
+    def test_no_cloudflare_left_in_the_project(self):
+        for name in ("Dockerfile", "docker-compose.yml", "install-docker.sh", "keep-inbound.sh", "README.md",
+                     "malinnik/server.py", "malinnik/sites.py", "malinnik/bot.py", "malinnik/web/app.js",
+                     "malinnik/web/index.html"):
+            self.assertNotRegex(read(name).lower(), r"cloudflare|cloudflared|trycloudflare", name)
+        self.assertFalse(os.path.exists(os.path.join(ROOT, "malinnik", "tunnel.py")))
+
+    def test_keep_inbound_rules_only_touch_router_traffic(self):
+        script = read("keep-inbound.sh")
+        self.assertIn("lookup main priority 100", script)
+        self.assertIn("ct state new ct mark set", script)
+        self.assertIn('iifname "$dev"', script, "отмечать надо только то, что пришло через роутер")
+        self.assertIn("meta l4proto tcp", script, "UDP самого VPN трогать нельзя")
+        self.assertNotRegex(script, r"\b(ufw|iptables -F|nft flush)\b", "чужие правила трогать нельзя")
 
     def test_install_instructions_run_on_the_server_itself(self):
         readme = read("README.md")
@@ -85,9 +100,10 @@ class InstallerTests(unittest.TestCase):
         return result.returncode, result.stdout, result.stderr
 
     def test_syntax(self):
-        path = os.path.join(ROOT, "install-docker.sh").replace("\\", "/")
-        result = subprocess.run([BASH, "-n", path], capture_output=True)
-        self.assertEqual(result.returncode, 0, result.stderr)
+        for name in ("install-docker.sh", "keep-inbound.sh"):
+            path = os.path.join(ROOT, name).replace("\\", "/")
+            result = subprocess.run([BASH, "-n", path], capture_output=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_domain_validation(self):
         for good, expected in (("Example.RU", "example.ru"), ("sub.example.ru.", "sub.example.ru")):
