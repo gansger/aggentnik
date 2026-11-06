@@ -20,7 +20,7 @@ log = logging.getLogger("malinnik")
 
 # api.trycloudflare.com встречается в сообщениях об ошибках, это не адрес сайта.
 URL_RE = re.compile(rb"https://(?!api\.)[a-z0-9-]+\.trycloudflare\.com")
-INSTALL_HINT = "cloudflared не установлен. Запусти install.sh на малине ещё раз."
+INSTALL_HINT = "cloudflared не установлен. Запусти установщик панели на сервере ещё раз."
 STABLE_AFTER = 60
 MAX_DELAY = 60
 
